@@ -11,7 +11,7 @@ branding:
 inputs:
   otp-version:
     description: >
-      Erlang/OTP version to install. Accepts "latest", "29", "29.0", or "29.0.6"
+      Exact Erlang/OTP version to install (example: 29.0.6)
     required: true
   aws-lc-version:
     description: >

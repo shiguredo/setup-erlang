@@ -107,7 +107,7 @@ select_otp_version() {
     local requested="$2"
     manifest_rows "${file}" |
         awk -F'\t' -v req="${requested}" '
-            NF >= 6 && (req == "latest" || $1 == req || index($1, req ".") == 1) {
+            NF >= 6 && $1 == req {
                 found = $1
             }
             END {

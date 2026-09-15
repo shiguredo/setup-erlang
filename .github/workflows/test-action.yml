@@ -63,18 +63,30 @@ jobs:
           erl -noshell -pa "${work_dir}" -eval 'hello:main(), halt().'
 
   resolve:
-    name: Resolve versions
+    name: Reject unregistered versions
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install the latest Erlang/OTP with the default AWS-LC
-        uses: ./
-        with:
-          otp-version: "latest"
+      - name: Reject versions that are not registered
+        run: |
+          check_rejected() {
+            local version="$1"
+            if INPUT_OTP_VERSION="${version}" bash scripts/install.sh resolve >/dev/null 2>&1; then
+              echo "${version} must not resolve because it is not registered in the manifest"
+              exit 1
+            fi
+            echo "${version} was rejected as expected"
+          }
 
-      - name: Install a matching minor version
-        uses: ./
-        with:
-          otp-version: "29.0"
+          # 系統指定と latest は受け付けない
+          check_rejected "latest"
+          check_rejected "29"
+
+          # 完全一致の指定は、そのバージョンが無ければエラーになる
+          if awk -F'\t' '$1 == "29.0" { found = 1 } END { exit !found }' versions/builds.tsv; then
+            echo "29.0 is registered in the manifest; skipping the 29.0 check"
+          else
+            check_rejected "29.0"
+          fi
