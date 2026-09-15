@@ -43,7 +43,7 @@ jobs:
       - name: Smoke test
         run: |
           set -euo pipefail
-          output="$(erl -noshell -eval 'ok = application:ensure_all_started(crypto), [{_, _, VersionString} | _] = crypto:info_lib(), io:format("~s~n", [VersionString]), halt().')"
+          output="$(erl -noshell -eval '{ok, _} = application:ensure_all_started(crypto), [{_, _, VersionString} | _] = crypto:info_lib(), io:format("~s~n", [VersionString]), halt().')"
           echo "crypto backend: ${output}"
           case "${output}" in
             *AWS-LC*) ;;

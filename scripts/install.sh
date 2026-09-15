@@ -238,7 +238,7 @@ verify_installation() {
     [[ -x "${erl_bin}" ]] || die "erl is not installed at ${erl_bin}"
     local output
     if ! output="$(
-        "${erl_bin}" -noshell -eval 'ok = application:ensure_all_started(crypto), [{_, _, VersionString} | _] = crypto:info_lib(), io:format("~s~n", [VersionString]), halt().' 2>&1
+        "${erl_bin}" -noshell -eval '{ok, _} = application:ensure_all_started(crypto), [{_, _, VersionString} | _] = crypto:info_lib(), io:format("~s~n", [VersionString]), halt().' 2>&1
     )"; then
         die "Erlang/OTP failed to start: ${output}"
     fi

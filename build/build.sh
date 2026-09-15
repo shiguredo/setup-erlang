@@ -158,7 +158,7 @@ verify_release() {
 
     local output
     if ! output="$(
-        "${erl_bin}" -noshell -eval 'ok = application:ensure_all_started(crypto), [{_, _, VersionString} | _] = crypto:info_lib(), io:format("~s~n", [VersionString]), halt().' 2>&1
+        "${erl_bin}" -noshell -eval '{ok, _} = application:ensure_all_started(crypto), [{_, _, VersionString} | _] = crypto:info_lib(), io:format("~s~n", [VersionString]), halt().' 2>&1
     )"; then
         die "Erlang/OTP failed to start: ${output}"
     fi
