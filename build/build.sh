@@ -6,6 +6,11 @@
 # shiguredo/docker-erlang-otp so that the resulting binaries have the same
 # applications and features as the container images.
 #
+# Erlang/OTP is packaged as a release (make release) instead of an installation
+# (make install). The installation layout puts erts under lib/erlang, where the
+# generated erl script cannot find the root directory after the tree is moved,
+# so the release layout is required for a relocatable archive.
+#
 set -euo pipefail
 
 : "${OTP_VERSION:?OTP_VERSION is required (example: 29.0.6)}"
@@ -18,11 +23,6 @@ WORK_DIR="${WORK_DIR:-$(pwd)/work}"
 OUTPUT_DIR="${OUTPUT_DIR:-$(pwd)/out}"
 
 PLATFORM="$(uname -s)"
-AWS_LC_SOURCE_DIR="${WORK_DIR}/aws-lc"
-AWS_LC_INSTALL_DIR="${WORK_DIR}/aws-lc-install"
-OTP_SOURCE_DIR="${WORK_DIR}/otp"
-OTP_INSTALL_DIR="${WORK_DIR}/erlang"
-ASSET_NAME="otp-${TARGET}.tar.gz"
 
 die() {
     printf 'build-erlang: %s\n' "$1" >&2
@@ -108,13 +108,17 @@ build_aws_lc() {
 }
 
 build_otp() {
-    rm -rf "${OTP_SOURCE_DIR}" "${OTP_INSTALL_DIR}"
+    rm -rf "${OTP_SOURCE_DIR}" "${RELEASE_DIR}"
     git clone --depth 1 --branch "${SOURCE_TAG}" \
         "https://github.com/${SOURCE_REPOSITORY}" "${OTP_SOURCE_DIR}"
     (
         cd "${OTP_SOURCE_DIR}"
+        export ERL_TOP="${OTP_SOURCE_DIR}"
+        export ERLC_USE_SERVER=true
+        MAKEFLAGS="-j$(job_count)"
+        export MAKEFLAGS
+        export RELEASE_ROOT="${RELEASE_DIR}"
         ./configure \
-            --prefix="${OTP_INSTALL_DIR}" \
             --enable-kernel-poll \
             --enable-dirty-schedulers \
             --enable-jit \
@@ -140,11 +144,13 @@ build_otp() {
             --without-snmp \
             --without-erl_docgen \
             --without-ssh
-        make -j"$(job_count)"
-        make install
+        make release
+        cd "${RELEASE_DIR}"
+        ./Install -sasl "${PWD}"
+        rm -f Install
     )
-    [[ -x "${OTP_INSTALL_DIR}/bin/erl" ]] ||
-        die "the Erlang/OTP installation is incomplete: ${OTP_INSTALL_DIR}/bin/erl is missing"
+    [[ -x "${RELEASE_DIR}/bin/erl" ]] ||
+        die "the Erlang/OTP release is incomplete: ${RELEASE_DIR}/bin/erl is missing"
 }
 
 crypto_nif_in() {
@@ -153,19 +159,29 @@ crypto_nif_in() {
 
 verify_release() {
     local release_dir="$1"
-    local erl_bin="${release_dir}/bin/erl"
+    local expected_root
+    expected_root="$(cd "${release_dir}" && pwd -P)"
+    local erl_bin="${expected_root}/bin/erl"
     [[ -x "${erl_bin}" ]] || die "erl is not found in the release: ${erl_bin}"
 
     local output
     if ! output="$(
-        "${erl_bin}" -noshell -eval '{ok, _} = application:ensure_all_started(crypto), [{_, _, VersionString} | _] = crypto:info_lib(), io:format("~s~n", [VersionString]), halt().' 2>&1
+        "${erl_bin}" -noshell -eval '{ok, _} = application:ensure_all_started(crypto), [{_, _, VersionString} | _] = crypto:info_lib(), io:format("~s~n", [VersionString]), io:format("~s~n", [code:root_dir()]), halt().' 2>&1
     )"; then
         die "Erlang/OTP failed to start: ${output}"
     fi
-    case "${output}" in
+
+    local version_string
+    local root_dir
+    version_string="$(printf '%s\n' "${output}" | sed -n 1p)"
+    root_dir="$(printf '%s\n' "${output}" | sed -n 2p)"
+    case "${version_string}" in
         *AWS-LC*) ;;
-        *) die "crypto is not linked against AWS-LC: ${output}" ;;
+        *) die "crypto is not linked against AWS-LC: ${version_string}" ;;
     esac
+    if [[ "${root_dir}" != "${expected_root}" ]]; then
+        die "Erlang/OTP is not relocatable: code:root_dir()=${root_dir}, expected=${expected_root}"
+    fi
 
     local crypto_nif
     crypto_nif="$(crypto_nif_in "${release_dir}")"
@@ -188,13 +204,13 @@ verify_release() {
             fi
             ;;
     esac
-    printf 'build-erlang: verified crypto backend %s\n' "${output}"
+    printf 'build-erlang: verified crypto backend %s at %s\n' "${version_string}" "${root_dir}"
 }
 
 package_release() {
     mkdir -p "${OUTPUT_DIR}"
     local asset="${OUTPUT_DIR}/${ASSET_NAME}"
-    tar czf "${asset}" -C "${OTP_INSTALL_DIR}" .
+    tar czf "${asset}" -C "${RELEASE_DIR}" .
 
     local test_dir="${WORK_DIR}/relocation-test"
     rm -rf "${test_dir}"
@@ -216,6 +232,15 @@ main() {
     fi
     require_commands
     mkdir -p "${WORK_DIR}" "${OUTPUT_DIR}"
+    WORK_DIR="$(cd "${WORK_DIR}" && pwd -P)"
+    OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd -P)"
+
+    AWS_LC_SOURCE_DIR="${WORK_DIR}/aws-lc"
+    AWS_LC_INSTALL_DIR="${WORK_DIR}/aws-lc-install"
+    OTP_SOURCE_DIR="${WORK_DIR}/otp"
+    RELEASE_DIR="${WORK_DIR}/erlang"
+    ASSET_NAME="otp-${TARGET}.tar.gz"
+
     printf 'build-erlang: Erlang/OTP %s with AWS-LC %s for %s on %s\n' \
         "${OTP_VERSION}" "${AWS_LC_VERSION}" "${TARGET}" "${PLATFORM}"
     build_aws_lc
