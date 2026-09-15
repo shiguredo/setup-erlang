@@ -25,6 +25,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build:
@@ -123,6 +124,7 @@ jobs:
           fi
 
       - name: Update manifest
+        id: manifest
         env:
           OTP_VERSION: ${{ inputs.otp_version }}
           AWS_LC_VERSION: ${{ inputs.aws_lc_version }}
@@ -132,10 +134,18 @@ jobs:
 
           if git diff --quiet -- versions/builds.tsv; then
             echo "manifest is unchanged"
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
           else
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add versions/builds.tsv
             git commit -m "Erlang/OTP ${OTP_VERSION} と AWS-LC ${AWS_LC_VERSION} のバイナリを追加する"
             git push
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
           fi
+
+      - name: Run tests
+        if: steps.manifest.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run test-action.yml --repo "${GITHUB_REPOSITORY}"
