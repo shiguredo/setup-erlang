@@ -38,11 +38,14 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+          - runner: macos-26
+            target: aarch64-apple-darwin
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install build dependencies
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -55,6 +58,19 @@ jobs:
             libncurses-dev \
             ninja-build
 
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          missing=()
+          for tool in cmake ninja go; do
+            if ! command -v "${tool}" >/dev/null 2>&1; then
+              missing+=("${tool}")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            brew install "${missing[@]}"
+          fi
+
       - name: Build Erlang/OTP with AWS-LC
         env:
           OTP_VERSION: ${{ inputs.otp_version }}
@@ -63,7 +79,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           WORK_DIR: ${{ runner.temp }}/setup-erlang-work
           OUTPUT_DIR: ${{ runner.temp }}/setup-erlang-out
-        run: ./build/linux.sh
+        run: ./build/build.sh
 
       - name: Upload asset
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
