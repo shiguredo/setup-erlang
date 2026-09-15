@@ -1,0 +1,125 @@
+name: Build Erlang/OTP
+
+on:
+  workflow_dispatch:
+    inputs:
+      otp_version:
+        description: Erlang/OTP version (example 29.0.6)
+        required: true
+        type: string
+      aws_lc_version:
+        description: AWS-LC version (example v5.8.0)
+        required: true
+        default: v5.8.0
+        type: string
+      source_repository:
+        description: Erlang/OTP repository
+        required: false
+        default: shiguredo/otp
+        type: string
+      publish:
+        description: Create a GitHub Release and update versions/builds.tsv
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf \
+            build-essential \
+            cmake \
+            curl \
+            git \
+            golang \
+            libncurses-dev \
+            ninja-build
+
+      - name: Build Erlang/OTP with AWS-LC
+        env:
+          OTP_VERSION: ${{ inputs.otp_version }}
+          AWS_LC_VERSION: ${{ inputs.aws_lc_version }}
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          TARGET: ${{ matrix.target }}
+          WORK_DIR: ${{ runner.temp }}/setup-erlang-work
+          OUTPUT_DIR: ${{ runner.temp }}/setup-erlang-out
+        run: ./build/linux.sh
+
+      - name: Upload asset
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: otp-${{ matrix.target }}
+          path: ${{ runner.temp }}/setup-erlang-out/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Release
+    if: inputs.publish
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: otp-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OTP_VERSION: ${{ inputs.otp_version }}
+          AWS_LC_VERSION: ${{ inputs.aws_lc_version }}
+        run: |
+          release_tag="otp-${OTP_VERSION}-aws-lc-${AWS_LC_VERSION}"
+          cd artifacts
+          sha256sum otp-*.tar.gz > SHA256SUMS
+          if gh release view "${release_tag}" >/dev/null 2>&1; then
+            gh release upload "${release_tag}" otp-*.tar.gz SHA256SUMS --clobber
+          else
+            gh release create "${release_tag}" otp-*.tar.gz SHA256SUMS \
+              --title "Erlang/OTP ${OTP_VERSION} with AWS-LC ${AWS_LC_VERSION}" \
+              --notes "Prebuilt Erlang/OTP ${OTP_VERSION} with AWS-LC ${AWS_LC_VERSION}."
+          fi
+
+      - name: Update manifest
+        env:
+          OTP_VERSION: ${{ inputs.otp_version }}
+          AWS_LC_VERSION: ${{ inputs.aws_lc_version }}
+          SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+        run: |
+          ./build/update-manifest.sh
+
+          if git diff --quiet -- versions/builds.tsv; then
+            echo "manifest is unchanged"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add versions/builds.tsv
+            git commit -m "Erlang/OTP ${OTP_VERSION} と AWS-LC ${AWS_LC_VERSION} のバイナリを追加する"
+            git push
+          fi

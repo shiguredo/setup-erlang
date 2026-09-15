@@ -1,0 +1,80 @@
+name: Test action
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: Install (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - ubuntu-26.04
+          - ubuntu-26.04-arm
+          - ubuntu-slim
+          - macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Erlang/OTP
+        uses: ./
+        with:
+          otp-version: "29.0.6"
+          aws-lc-version: "v5.8.0"
+
+      - name: Install Erlang/OTP again
+        uses: ./
+        with:
+          otp-version: "29.0.6"
+          aws-lc-version: "v5.8.0"
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          output="$(erl -noshell -eval 'ok = application:ensure_all_started(crypto), [{_, _, VersionString} | _] = crypto:info_lib(), io:format("~s~n", [VersionString]), halt().')"
+          echo "crypto backend: ${output}"
+          case "${output}" in
+            *AWS-LC*) ;;
+            *)
+              echo "crypto is not linked against AWS-LC"
+              exit 1
+              ;;
+          esac
+
+          work_dir="$(mktemp -d)"
+          cat > "${work_dir}/hello.erl" <<'ERL'
+          -module(hello).
+          -export([main/0]).
+          main() -> io:format("hello from setup-erlang~n").
+          ERL
+          erlc -o "${work_dir}" "${work_dir}/hello.erl"
+          erl -noshell -pa "${work_dir}" -eval 'hello:main(), halt().'
+
+  resolve:
+    name: Resolve versions
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the latest Erlang/OTP with the default AWS-LC
+        uses: ./
+        with:
+          otp-version: "latest"
+
+      - name: Install a matching minor version
+        uses: ./
+        with:
+          otp-version: "29.0"

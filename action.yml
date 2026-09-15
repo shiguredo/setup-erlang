@@ -1,0 +1,68 @@
+name: setup-erlang
+
+description: Install prebuilt Erlang/OTP with AWS-LC on GitHub Actions runners
+
+author: Shiguredo Inc.
+
+branding:
+  color: blue
+  icon: download
+
+inputs:
+  otp-version:
+    description: >
+      Erlang/OTP version to install. Accepts "latest", "29", "29.0", or "29.0.6"
+    required: true
+  aws-lc-version:
+    description: >
+      AWS-LC version to install. Accepts "v5.8.0" or "5.8.0". Defaults to the
+      latest AWS-LC version built for the specified Erlang/OTP version
+    required: false
+  otp-target:
+    description: >
+      Target triple override. Normally detected from the runner.
+      Example: aarch64-apple-darwin
+    required: false
+  use-cache:
+    description: Cache the extracted Erlang/OTP directory with actions/cache
+    required: false
+    default: "false"
+
+outputs:
+  otp-version:
+    description: The exact Erlang/OTP version that was installed
+    value: ${{ steps.install.outputs.otp_version }}
+  aws-lc-version:
+    description: The exact AWS-LC version that was installed
+    value: ${{ steps.install.outputs.aws_lc_version }}
+  erlang-root-dir:
+    description: The directory where Erlang/OTP was installed
+    value: ${{ steps.install.outputs.install_root }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve Erlang/OTP version
+      id: resolve
+      shell: bash
+      env:
+        INPUT_OTP_VERSION: ${{ inputs.otp-version }}
+        INPUT_AWS_LC_VERSION: ${{ inputs.aws-lc-version }}
+        INPUT_OTP_TARGET: ${{ inputs.otp-target }}
+      run: bash "${GITHUB_ACTION_PATH}/scripts/install.sh" resolve
+
+    - name: Restore Erlang/OTP cache
+      if: inputs.use-cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.resolve.outputs.install_root }}
+        key: setup-erlang-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.otp_version }}-${{ steps.resolve.outputs.aws_lc_version }}
+
+    - name: Install Erlang/OTP
+      id: install
+      shell: bash
+      env:
+        INPUT_OTP_VERSION: ${{ inputs.otp-version }}
+        INPUT_AWS_LC_VERSION: ${{ inputs.aws-lc-version }}
+        INPUT_OTP_TARGET: ${{ inputs.otp-target }}
+      run: bash "${GITHUB_ACTION_PATH}/scripts/install.sh" install
