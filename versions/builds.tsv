@@ -2,3 +2,6 @@
 29.0.6	v5.8.0	aarch64-apple-darwin	otp-aarch64-apple-darwin.tar.gz	bdb8039bb8b96d1c655118466c8fa3984d7ff0d404697494d7659df5d255cafc	shiguredo/otp@3242642d6e42c88f1f83eeda801e834d970a97e7
 29.0.6	v5.8.0	aarch64-unknown-linux-gnu	otp-aarch64-unknown-linux-gnu.tar.gz	675c49a70c1bff25774ee6e7106e7fee659b47ddae8df50292f6e8588f111a21	shiguredo/otp@3242642d6e42c88f1f83eeda801e834d970a97e7
 29.0.6	v5.8.0	x86_64-unknown-linux-gnu	otp-x86_64-unknown-linux-gnu.tar.gz	c0c0a5f03db352e3310aee41bf7245679f70a965e7493f917c7d8002b142bd1c	shiguredo/otp@3242642d6e42c88f1f83eeda801e834d970a97e7
+29.1	v5.9.0	aarch64-apple-darwin	otp-aarch64-apple-darwin.tar.gz	3ae647412b656f8cdb9c1cbdf5991b39a497b9304683efadb7aa7d4bb0ecb82c	shiguredo/otp@850c1bf0a3fdc04637e5976433ff13daa6d6a633
+29.1	v5.9.0	aarch64-unknown-linux-gnu	otp-aarch64-unknown-linux-gnu.tar.gz	2649fe52cc9c78f734772d621525266d5b4dd3844bbe1e444dce37f62f0d0d9d	shiguredo/otp@850c1bf0a3fdc04637e5976433ff13daa6d6a633
+29.1	v5.9.0	x86_64-unknown-linux-gnu	otp-x86_64-unknown-linux-gnu.tar.gz	281eba332f25a797deb127fce1e7bc34dd7655e366fe8306192cc819cb5dde9c	shiguredo/otp@850c1bf0a3fdc04637e5976433ff13daa6d6a633
