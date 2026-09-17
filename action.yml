@@ -11,11 +11,11 @@ branding:
 inputs:
   otp-version:
     description: >
-      Exact Erlang/OTP version to install (example: 29.0.6)
+      Exact Erlang/OTP version to install (example: 29.1)
     required: true
   aws-lc-version:
     description: >
-      AWS-LC version to install. Accepts "v5.8.0" or "5.8.0". Defaults to the
+      AWS-LC version to install. Accepts "v5.9.0" or "5.9.0". Defaults to the
       latest AWS-LC version built for the specified Erlang/OTP version
     required: false
   otp-target:

@@ -5,12 +5,12 @@
 ```yaml
 - uses: shiguredo/setup-erlang@main
   with:
-    otp-version: "29.0.6"
-    aws-lc-version: "v5.8.0"
+    otp-version: "29.1"
+    aws-lc-version: "v5.9.0"
 ```
 
 - ビルド済みの tar.gz をダウンロードしてインストールするだけです
-- `otp-version` は完全一致で指定します（例: `29.0.6`）
+- `otp-version` は完全一致で指定します（例: `29.1`）
 - `aws-lc-version` は省略できます。省略時はその Erlang/OTP で利用できる最新の AWS-LC を使います
 - 利用できるバージョンは [versions/builds.tsv](versions/builds.tsv) にあります
 

@@ -13,8 +13,8 @@
 #
 set -euo pipefail
 
-: "${OTP_VERSION:?OTP_VERSION is required (example: 29.0.6)}"
-: "${AWS_LC_VERSION:?AWS_LC_VERSION is required (example: v5.8.0)}"
+: "${OTP_VERSION:?OTP_VERSION is required (example: 29.1)}"
+: "${AWS_LC_VERSION:?AWS_LC_VERSION is required (example: v5.9.0)}"
 : "${TARGET:?TARGET is required (example: x86_64-unknown-linux-gnu)}"
 
 SOURCE_REPOSITORY="${SOURCE_REPOSITORY:-shiguredo/otp}"
