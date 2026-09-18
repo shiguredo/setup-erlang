@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 #
 # Update versions/builds.tsv with the assets of one Erlang/OTP and AWS-LC
-# combination. Rows of the same combination are replaced, and all rows are
+# combination. The artifacts directory must contain SHA256SUMS for the
+# Erlang/OTP tarball (otp-<target>.tar.gz) and the base PLT (otp-<target>.iplt)
+# of every target. Rows of the same combination are replaced, and all rows are
 # sorted by Erlang/OTP version, AWS-LC version, and target.
 #
 set -euo pipefail
@@ -40,12 +42,37 @@ tmp="$(mktemp)"
             NF >= 6 && $1 == otp && $2 == aws_lc { next }
             { print }
         ' "${MANIFEST_FILE}"
-        while read -r digest file; do
-            target="${file#otp-}"
-            target="${target%.tar.gz}"
-            printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-                "${OTP_VERSION}" "${AWS_LC_VERSION}" "${target}" "${file}" "${digest}" "${source_ref}"
-        done < "${ARTIFACTS_DIR}/SHA256SUMS"
+        # tarball と PLT の 2 行を target ごとに 1 行へまとめる
+        awk -v otp="${OTP_VERSION}" -v aws_lc="${AWS_LC_VERSION}" -v source_ref="${source_ref}" '
+            {
+                digest = $1
+                file = $2
+                target = file
+                sub(/^otp-/, "", target)
+                if (file ~ /\.tar\.gz$/) {
+                    sub(/\.tar\.gz$/, "", target)
+                    tarball[target] = file
+                    tarball_sha[target] = digest
+                } else if (file ~ /\.iplt$/) {
+                    sub(/\.iplt$/, "", target)
+                    plt[target] = file
+                    plt_sha[target] = digest
+                } else {
+                    printf "update-manifest: unexpected artifact: %s\n", file > "/dev/stderr"
+                    exit 1
+                }
+                targets[target] = 1
+            }
+            END {
+                for (target in targets) {
+                    if (!(target in tarball) || !(target in plt)) {
+                        printf "update-manifest: missing asset for %s\n", target > "/dev/stderr"
+                        exit 1
+                    }
+                    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", \
+                        otp, aws_lc, target, tarball[target], tarball_sha[target], source_ref, plt[target], plt_sha[target]
+                }
+            }' "${ARTIFACTS_DIR}/SHA256SUMS"
     } |
         sort -t$'\t' -k1,1V -k2,2V -k3,3
 } > "${tmp}"

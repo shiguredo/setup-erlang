@@ -22,6 +22,13 @@ on:
         required: false
         default: true
         type: boolean
+      plt_only:
+        description: >
+          Regenerate only the base PLT assets of an existing release without
+          rebuilding Erlang/OTP
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -30,6 +37,7 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.target }}
+    if: ${{ !inputs.plt_only }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -90,10 +98,55 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  plt:
+    name: Build base PLT ${{ matrix.target }}
+    if: ${{ inputs.plt_only }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - runner: macos-26
+            target: aarch64-apple-darwin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download the release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OTP_VERSION: ${{ inputs.otp_version }}
+          AWS_LC_VERSION: ${{ inputs.aws_lc_version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          release_tag="otp-${OTP_VERSION}-aws-lc-${AWS_LC_VERSION}"
+          mkdir -p work/erlang
+          gh release download "${release_tag}" --pattern "otp-${TARGET}.tar.gz" --dir work
+          tar -xzf "work/otp-${TARGET}.tar.gz" -C work/erlang
+
+      - name: Build the base PLT
+        env:
+          ERLANG_ROOT: ${{ github.workspace }}/work/erlang
+          OUTPUT_PLT: ${{ runner.temp }}/setup-erlang-out/otp-${{ matrix.target }}.iplt
+        run: ./build/build-plt.sh
+
+      - name: Upload asset
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: otp-${{ matrix.target }}
+          path: ${{ runner.temp }}/setup-erlang-out/*.iplt
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     name: Release
-    if: inputs.publish
-    needs: build
+    needs: [build, plt]
+    if: ${{ inputs.publish && !cancelled() && (needs.build.result == 'success' || needs.plt.result == 'success') }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -108,19 +161,33 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Create release
+      - name: Download the existing assets
+        if: inputs.plt_only
         env:
           GH_TOKEN: ${{ github.token }}
           OTP_VERSION: ${{ inputs.otp_version }}
           AWS_LC_VERSION: ${{ inputs.aws_lc_version }}
         run: |
+          set -euo pipefail
+          release_tag="otp-${OTP_VERSION}-aws-lc-${AWS_LC_VERSION}"
+          gh release download "${release_tag}" --pattern "otp-*.tar.gz" --dir artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OTP_VERSION: ${{ inputs.otp_version }}
+          AWS_LC_VERSION: ${{ inputs.aws_lc_version }}
+          PLT_ONLY: ${{ inputs.plt_only }}
+        run: |
           release_tag="otp-${OTP_VERSION}-aws-lc-${AWS_LC_VERSION}"
           cd artifacts
-          sha256sum otp-*.tar.gz > SHA256SUMS
-          if gh release view "${release_tag}" >/dev/null 2>&1; then
-            gh release upload "${release_tag}" otp-*.tar.gz SHA256SUMS --clobber
+          sha256sum otp-*.tar.gz otp-*.iplt > SHA256SUMS
+          if [[ "${PLT_ONLY}" == "true" ]]; then
+            gh release upload "${release_tag}" otp-*.iplt SHA256SUMS --clobber
+          elif gh release view "${release_tag}" >/dev/null 2>&1; then
+            gh release upload "${release_tag}" otp-*.tar.gz otp-*.iplt SHA256SUMS --clobber
           else
-            gh release create "${release_tag}" otp-*.tar.gz SHA256SUMS \
+            gh release create "${release_tag}" otp-*.tar.gz otp-*.iplt SHA256SUMS \
               --title "Erlang/OTP ${OTP_VERSION} with AWS-LC ${AWS_LC_VERSION}" \
               --notes "Prebuilt Erlang/OTP ${OTP_VERSION} with AWS-LC ${AWS_LC_VERSION}."
           fi
@@ -131,6 +198,7 @@ jobs:
           OTP_VERSION: ${{ inputs.otp_version }}
           AWS_LC_VERSION: ${{ inputs.aws_lc_version }}
           SOURCE_REPOSITORY: ${{ inputs.source_repository }}
+          PLT_ONLY: ${{ inputs.plt_only }}
         run: |
           ./build/update-manifest.sh
 
@@ -138,10 +206,15 @@ jobs:
             echo "manifest is unchanged"
             echo "changed=false" >> "${GITHUB_OUTPUT}"
           else
+            if [[ "${PLT_ONLY}" == "true" ]]; then
+              message="Erlang/OTP ${OTP_VERSION} と AWS-LC ${AWS_LC_VERSION} のベース PLT を追加する"
+            else
+              message="Erlang/OTP ${OTP_VERSION} と AWS-LC ${AWS_LC_VERSION} のバイナリを追加する"
+            fi
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add versions/builds.tsv
-            git commit -m "Erlang/OTP ${OTP_VERSION} と AWS-LC ${AWS_LC_VERSION} のバイナリを追加する"
+            git commit -m "${message}"
             git pull --rebase origin "${GITHUB_REF_NAME}"
             git push
             echo "changed=true" >> "${GITHUB_OUTPUT}"
@@ -151,4 +224,4 @@ jobs:
         if: steps.manifest.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run test-action.yml --repo "${GITHUB_REPOSITORY}"
+        run: gh workflow run test-action.yml --repo "${GITHUB_REPOSITORY}" --ref "${GITHUB_REF_NAME}"

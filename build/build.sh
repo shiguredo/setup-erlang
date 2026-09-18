@@ -11,11 +11,17 @@
 # generated erl script cannot find the root directory after the tree is moved,
 # so the release layout is required for a relocatable archive.
 #
+# The dialyzer base PLT (incremental) is built with build-plt.sh and shipped as
+# otp-<target>.iplt so that projects do not have to analyze the OTP applications
+# on every CI run.
+#
 set -euo pipefail
 
 : "${OTP_VERSION:?OTP_VERSION is required (example: 29.1)}"
 : "${AWS_LC_VERSION:?AWS_LC_VERSION is required (example: v5.9.0)}"
 : "${TARGET:?TARGET is required (example: x86_64-unknown-linux-gnu)}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 SOURCE_REPOSITORY="${SOURCE_REPOSITORY:-shiguredo/otp}"
 SOURCE_TAG="${SOURCE_TAG:-aws-lc-OTP-${OTP_VERSION}}"
@@ -225,6 +231,14 @@ package_release() {
     printf 'build-erlang: sha256 %s\n' "${digest}"
 }
 
+package_plt() {
+    local plt_asset="${OUTPUT_DIR}/${PLT_NAME}"
+    ERLANG_ROOT="${RELEASE_DIR}" OUTPUT_PLT="${plt_asset}" "${SCRIPT_DIR}/build-plt.sh"
+    local digest
+    digest="$(sha256_of "${plt_asset}")"
+    printf 'build-erlang: sha256 %s (base PLT)\n' "${digest}"
+}
+
 main() {
     if [[ "${PLATFORM}" == 'Darwin' ]]; then
         [[ "$(uname -m)" == 'arm64' ]] || die "macOS builds require an arm64 host, got $(uname -m)"
@@ -240,12 +254,14 @@ main() {
     OTP_SOURCE_DIR="${WORK_DIR}/otp"
     RELEASE_DIR="${WORK_DIR}/erlang"
     ASSET_NAME="otp-${TARGET}.tar.gz"
+    PLT_NAME="otp-${TARGET}.iplt"
 
     printf 'build-erlang: Erlang/OTP %s with AWS-LC %s for %s on %s\n' \
         "${OTP_VERSION}" "${AWS_LC_VERSION}" "${TARGET}" "${PLATFORM}"
     build_aws_lc
     build_otp
     package_release
+    package_plt
 }
 
 main "$@"

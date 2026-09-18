@@ -1,4 +1,4 @@
-# otp_version	aws_lc_version	target	asset	sha256	source_ref
+# otp_version	aws_lc_version	target	asset	sha256	source_ref	plt_asset	plt_sha256
 29.0.6	v5.8.0	aarch64-apple-darwin	otp-aarch64-apple-darwin.tar.gz	bdb8039bb8b96d1c655118466c8fa3984d7ff0d404697494d7659df5d255cafc	shiguredo/otp@3242642d6e42c88f1f83eeda801e834d970a97e7
 29.0.6	v5.8.0	aarch64-unknown-linux-gnu	otp-aarch64-unknown-linux-gnu.tar.gz	675c49a70c1bff25774ee6e7106e7fee659b47ddae8df50292f6e8588f111a21	shiguredo/otp@3242642d6e42c88f1f83eeda801e834d970a97e7
 29.0.6	v5.8.0	x86_64-unknown-linux-gnu	otp-x86_64-unknown-linux-gnu.tar.gz	c0c0a5f03db352e3310aee41bf7245679f70a965e7493f917c7d8002b142bd1c	shiguredo/otp@3242642d6e42c88f1f83eeda801e834d970a97e7
