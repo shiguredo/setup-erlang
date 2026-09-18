@@ -24,7 +24,16 @@ inputs:
       Example: aarch64-apple-darwin
     required: false
   use-cache:
-    description: Cache the extracted Erlang/OTP directory with actions/cache
+    description: >
+      Cache the extracted Erlang/OTP directory with actions/cache. Caching is
+      skipped on self-hosted runners because RUNNER_TOOL_CACHE persists there
+    required: false
+    default: "false"
+  use-plt:
+    description: >
+      Download the dialyzer base PLT (incremental) of the release and install it
+      at ~/.cache/rebar3, where rebar3 looks for the base PLT by default. The
+      release must contain the PLT asset
     required: false
     default: "false"
 
@@ -38,6 +47,11 @@ outputs:
   erlang-root-dir:
     description: The directory where Erlang/OTP was installed
     value: ${{ steps.install.outputs.install_root }}
+  plt-path:
+    description: >
+      The path of the dialyzer base PLT. The file exists when use-plt is
+      enabled
+    value: ${{ steps.install.outputs.plt_path }}
 
 runs:
   using: composite
@@ -49,10 +63,11 @@ runs:
         INPUT_OTP_VERSION: ${{ inputs.otp-version }}
         INPUT_AWS_LC_VERSION: ${{ inputs.aws-lc-version }}
         INPUT_OTP_TARGET: ${{ inputs.otp-target }}
+        INPUT_USE_PLT: ${{ inputs.use-plt }}
       run: bash "${GITHUB_ACTION_PATH}/scripts/install.sh" resolve
 
     - name: Restore Erlang/OTP cache
-      if: inputs.use-cache == 'true'
+      if: inputs.use-cache == 'true' && runner.environment == 'github-hosted'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.resolve.outputs.install_root }}
@@ -65,4 +80,5 @@ runs:
         INPUT_OTP_VERSION: ${{ inputs.otp-version }}
         INPUT_AWS_LC_VERSION: ${{ inputs.aws-lc-version }}
         INPUT_OTP_TARGET: ${{ inputs.otp-target }}
+        INPUT_USE_PLT: ${{ inputs.use-plt }}
       run: bash "${GITHUB_ACTION_PATH}/scripts/install.sh" install

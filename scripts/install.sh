@@ -6,9 +6,16 @@
 # from GitHub Releases, verifies the sha256 checksum, extracts it, and puts the
 # bin directory on PATH for the following steps.
 #
+# When INPUT_USE_PLT is true, the dialyzer base PLT (incremental) shipped with
+# the release is installed so that rebar3 can use it as the seed of its project
+# PLTs. The PLT is stored in the install directory (so that it is covered by
+# RUNNER_TOOL_CACHE and actions/cache as well) and copied to
+# $HOME/.cache/rebar3, which is where rebar3 looks for the base PLT by default.
+#
 set -euo pipefail
 
 ACTION_REPOSITORY="${SETUP_ERLANG_REPOSITORY:-shiguredo/setup-erlang}"
+RELEASE_BASE_URL="${SETUP_ERLANG_RELEASE_BASE_URL:-https://github.com/${ACTION_REPOSITORY}/releases/download}"
 
 die() {
     printf 'setup-erlang: %s\n' "$1" >&2
@@ -153,6 +160,12 @@ install_root_for() {
     printf '%s\n' "${base}/setup-erlang/${otp_version}-aws-lc-${aws_lc_version}"
 }
 
+plt_path_for() {
+    local install_root="$1"
+    local otp_version="$2"
+    printf '%s\n' "${install_root}/plt/rebar3_${otp_version}_iplt"
+}
+
 resolve_versions() {
     local manifest
     manifest="$(manifest_path)"
@@ -184,15 +197,23 @@ resolve_versions() {
     ASSET="$(printf '%s' "${row}" | cut -f4)"
     SHA256="$(printf '%s' "${row}" | cut -f5)"
     SOURCE_REF="$(printf '%s' "${row}" | cut -f6)"
+    PLT_ASSET="$(printf '%s' "${row}" | cut -f7)"
+    PLT_SHA256="$(printf '%s' "${row}" | cut -f8)"
+    if [[ "${INPUT_USE_PLT:-false}" == "true" && -z "${PLT_ASSET}" ]]; then
+        die "no PLT asset is registered for Erlang/OTP ${OTP_VERSION_RESOLVED} + AWS-LC ${AWS_LC_VERSION_RESOLVED} on ${TARGET}; run the Build Erlang/OTP workflow with plt_only to add one"
+    fi
     RELEASE_TAG="otp-${OTP_VERSION_RESOLVED}-aws-lc-${AWS_LC_VERSION_RESOLVED}"
-    DOWNLOAD_URL="https://github.com/${ACTION_REPOSITORY}/releases/download/${RELEASE_TAG}/${ASSET}"
+    DOWNLOAD_URL="${RELEASE_BASE_URL}/${RELEASE_TAG}/${ASSET}"
+    PLT_URL="${RELEASE_BASE_URL}/${RELEASE_TAG}/${PLT_ASSET}"
     INSTALL_ROOT="$(install_root_for "${OTP_VERSION_RESOLVED}" "${AWS_LC_VERSION_RESOLVED}")"
+    PLT_PATH="$(plt_path_for "${INSTALL_ROOT}" "${OTP_VERSION_RESOLVED}")"
 }
 
 emit_outputs() {
     set_output otp_version "${OTP_VERSION_RESOLVED}"
     set_output aws_lc_version "${AWS_LC_VERSION_RESOLVED}"
     set_output install_root "${INSTALL_ROOT}"
+    set_output plt_path "${PLT_PATH}"
 }
 
 download_file() {
@@ -221,7 +242,7 @@ verify_sha256() {
         die 'sha256sum or shasum is required to verify the downloaded archive'
     fi
     if [[ "${actual}" != "${expected}" ]]; then
-        die "sha256 mismatch for ${ASSET}: expected ${expected}, actual ${actual}"
+        die "sha256 mismatch for $(basename "${file}"): expected ${expected}, actual ${actual}"
     fi
 }
 
@@ -247,6 +268,71 @@ verify_installation() {
         *) die "crypto is not linked against AWS-LC: ${output}" ;;
     esac
     printf 'setup-erlang: crypto backend is %s\n' "${output}"
+}
+
+verify_plt() {
+    local file="$1"
+    local erl_bin="${INSTALL_ROOT}/bin/erl"
+    [[ -x "${erl_bin}" ]] || die "erl is not installed at ${erl_bin}"
+    local output
+    if ! output="$(
+        PLT_FILE="${file}" "${erl_bin}" -noshell -eval '
+            case dialyzer:plt_info(os:getenv("PLT_FILE")) of
+                {ok, {incremental, [{modules, Modules}]}} ->
+                    io:format("~b", [length(Modules)]),
+                    halt(0);
+                Other ->
+                    io:format(standard_error, "~p~n", [Other]),
+                    halt(1)
+            end.' 2>&1
+    )"; then
+        die "the base PLT is not a valid incremental PLT: ${file} (${output})"
+    fi
+    printf 'setup-erlang: the base PLT contains %s modules\n' "${output}"
+}
+
+# rebar3 は releases/<major>/OTP_VERSION の中身を PLT のファイル名に使う
+installed_otp_release() {
+    local version_file
+    for version_file in "${INSTALL_ROOT}"/releases/*/OTP_VERSION; do
+        if [[ -f "${version_file}" ]]; then
+            tr -d '\r\n' < "${version_file}"
+            return 0
+        fi
+    done
+    printf '%s' "${OTP_VERSION_RESOLVED}"
+}
+
+install_plt() {
+    PLT_PATH="$(plt_path_for "${INSTALL_ROOT}" "$(installed_otp_release)")"
+    local installed_name
+    installed_name="$(basename "${PLT_PATH}")"
+    if [[ -s "${PLT_PATH}" ]]; then
+        printf 'setup-erlang: the base PLT is already installed at %s\n' "${PLT_PATH}"
+    else
+        local tmp_dir
+        tmp_dir="$(mktemp -d)"
+        local downloaded="${tmp_dir}/${PLT_ASSET}"
+        download_file "${PLT_URL}" "${downloaded}"
+        verify_sha256 "${downloaded}" "${PLT_SHA256}"
+        verify_plt "${downloaded}"
+        mkdir -p "$(dirname "${PLT_PATH}")"
+        mv "${downloaded}" "${PLT_PATH}"
+        chmod 0644 "${PLT_PATH}"
+        rm -rf "${tmp_dir}"
+    fi
+
+    # rebar3 がデフォルトで読む場所にも毎回コピーする
+    # (GitHub hosted runner では $HOME が毎回消えるため)
+    [[ -n "${HOME:-}" ]] || die 'HOME is required to install the base PLT'
+    local rebar3_cache_dir="${HOME}/.cache/rebar3"
+    local rebar3_plt="${rebar3_cache_dir}/${installed_name}"
+    mkdir -p "${rebar3_cache_dir}"
+    local tmp_plt="${rebar3_plt}.tmp.$$"
+    cp "${PLT_PATH}" "${tmp_plt}"
+    chmod 0644 "${tmp_plt}"
+    mv "${tmp_plt}" "${rebar3_plt}"
+    printf 'setup-erlang: installed the base PLT at %s\n' "${rebar3_plt}"
 }
 
 install_archive() {
@@ -284,6 +370,9 @@ install_command() {
     fi
     add_to_path "${INSTALL_ROOT}/bin"
     verify_installation
+    if [[ "${INPUT_USE_PLT:-false}" == "true" ]]; then
+        install_plt
+    fi
     emit_outputs
     printf 'setup-erlang: installed Erlang/OTP %s with AWS-LC %s at %s\n' \
         "${OTP_VERSION_RESOLVED}" "${AWS_LC_VERSION_RESOLVED}" "${INSTALL_ROOT}"

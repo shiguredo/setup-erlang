@@ -62,6 +62,111 @@ jobs:
           erlc -o "${work_dir}" "${work_dir}/hello.erl"
           erl -noshell -pa "${work_dir}" -eval 'hello:main(), halt().'
 
+  plt:
+    name: Base PLT
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # 公式リリースの rebar3 を固定して使う
+      REBAR3_VERSION: 3.25.1
+      REBAR3_SHA256: 924576737f0d3098e1fa4691e6f542bf61036d234c61ebdc18aafef8e2bccf67
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Erlang/OTP with the base PLT
+        id: setup
+        uses: ./
+        with:
+          otp-version: "29.1"
+          aws-lc-version: "v5.9.0"
+          use-cache: "true"
+          use-plt: "true"
+
+      - name: Smoke test the base PLT
+        run: |
+          set -euo pipefail
+          plt_path="${{ steps.setup.outputs.plt-path }}"
+          test -s "${plt_path}"
+
+          # rebar3 が読む場所にも同じファイルが配置されていること
+          rebar3_plt="${HOME}/.cache/rebar3/$(basename "${plt_path}")"
+          test -f "${rebar3_plt}"
+          cmp "${plt_path}" "${rebar3_plt}"
+
+          # incremental PLT として読めること
+          base_modules="$(PLT_FILE="${plt_path}" erl -noshell -eval '
+            case dialyzer:plt_info(os:getenv("PLT_FILE")) of
+                {ok, {incremental, [{modules, Modules}]}} -> io:format("~b", [length(Modules)]);
+                _ -> halt(1)
+            end, halt().')"
+          echo "base PLT modules: ${base_modules}"
+          test "${base_modules}" -gt 0
+          echo "BASE_PLT_MODULES=${base_modules}" >> "${GITHUB_ENV}"
+
+      - name: Download rebar3
+        run: |
+          set -euo pipefail
+          rebar3_dir="$(mktemp -d)"
+          curl -fsSL -o "${rebar3_dir}/rebar3" \
+            "https://github.com/erlang/rebar3/releases/download/${REBAR3_VERSION}/rebar3"
+          echo "${REBAR3_SHA256}  ${rebar3_dir}/rebar3" | sha256sum -c -
+          chmod +x "${rebar3_dir}/rebar3"
+          echo "REBAR3_DIR=${rebar3_dir}" >> "${GITHUB_ENV}"
+
+      - name: Dialyze a project with rebar3
+        run: |
+          set -euo pipefail
+          work_dir="$(mktemp -d)"
+          project_dir="${work_dir}/project"
+          mkdir -p "${project_dir}/src"
+          cat > "${project_dir}/rebar.config" <<'CONFIG'
+          {erl_opts, [debug_info]}.
+          {dialyzer, [{warnings, [extra_return, missing_return, no_unknown]},
+                      incremental,
+                      {plt_apps, top_level_deps},
+                      {plt_location, local},
+                      {base_plt_location, global}]}.
+          CONFIG
+          cat > "${project_dir}/src/testapp.app.src" <<'APP'
+          {application, testapp,
+           [{description, "setup-erlang test"},
+            {vsn, "0.1.0"},
+            {registered, []},
+            {applications, [kernel, stdlib]},
+            {env, []}]}.
+          APP
+          cat > "${project_dir}/src/testapp.erl" <<'ERL'
+          -module(testapp).
+          -export([f/1]).
+          f(X) -> X + 1.
+          ERL
+
+          cd "${project_dir}"
+          log="${work_dir}/dialyzer.log"
+          "${REBAR3_DIR}/rebar3" dialyzer -i > "${log}" 2>&1
+          cat "${log}"
+
+          if grep -q 'Creating base plt' "${log}"; then
+            echo "rebar3 rebuilt the base PLT; use-plt must provide it"
+            exit 1
+          fi
+          grep -q 'Running incremental analysis' "${log}"
+
+          # ベース PLT が project PLT のシードとして使われたことを確認する
+          project_plts=(_build/default/rebar3_*_iplt)
+          test -f "${project_plts[0]}"
+          project_modules="$(PLT_FILE="${project_plts[0]}" erl -noshell -eval '
+            case dialyzer:plt_info(os:getenv("PLT_FILE")) of
+                {ok, {incremental, [{modules, Modules}]}} -> io:format("~b", [length(Modules)]);
+                _ -> halt(1)
+            end, halt().')"
+          echo "project PLT modules: ${project_modules}"
+          if (( project_modules <= BASE_PLT_MODULES )); then
+            echo "the project PLT does not contain the base PLT modules"
+            exit 1
+          fi
+
   resolve:
     name: Reject unregistered versions
     runs-on: ubuntu-24.04
@@ -90,3 +195,21 @@ jobs:
           else
             check_rejected "29.0"
           fi
+
+      - name: Reject a row without a PLT asset
+        run: |
+          set -euo pipefail
+          work_dir="$(mktemp -d)"
+          printf '# otp_version\taws_lc_version\ttarget\tasset\tsha256\tsource_ref\n' > "${work_dir}/builds.tsv"
+          printf '29.1\tv5.9.0\taarch64-apple-darwin\totp-aarch64-apple-darwin.tar.gz\tdeadbeef\tshiguredo/otp@deadbeef\n' >> "${work_dir}/builds.tsv"
+
+          if SETUP_ERLANG_MANIFEST="${work_dir}/builds.tsv" \
+             INPUT_OTP_VERSION=29.1 \
+             INPUT_AWS_LC_VERSION=v5.9.0 \
+             INPUT_OTP_TARGET=aarch64-apple-darwin \
+             INPUT_USE_PLT=true \
+             bash scripts/install.sh resolve >/dev/null 2>&1; then
+            echo "resolve must fail when the row has no PLT asset"
+            exit 1
+          fi
+          echo "resolve rejected the row without a PLT asset as expected"
