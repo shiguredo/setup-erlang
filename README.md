@@ -10,8 +10,8 @@
 ```
 
 - ビルド済みの tar.gz をダウンロードしてインストールするだけです
-- dialyzer のベース PLT もダウンロードして `~/.cache/rebar3` に配置します（無効にするには `use-plt: "false"` を指定します）
-- `otp-version` は完全一致で指定します（例: `29.1`）
+- dialyzer のベース PLT もダウンロードして `~/.cache/rebar3` に配置します (無効にするには `use-plt: "false"` を指定します)
+- `otp-version` は完全一致で指定します (例: `29.1`)
 - `aws-lc-version` は省略できます。省略時はその Erlang/OTP で利用できる最新の AWS-LC を使います
 - 利用できるバージョンは [versions/builds.tsv](versions/builds.tsv) にあります
 
@@ -33,9 +33,16 @@
   - 対象のアプリは rebar3 のデフォルトと同じ `erts crypto kernel stdlib` です
   - PLT のパスは `plt-path` 出力で参照できます
   - rebar3 のデフォルト設定 (`base_plt_location: global`、`base_plt_prefix: rebar3`) が前提です
-- dialyzer の incremental モードは、ベース PLT に記録された `warnings` 設定とプロジェクトの `warnings` 設定が完全一致しないとフル解析になります
+- dialyzer の incremental モードは、ベース PLT に記録された `warnings` 設定とプロジェクトの `warnings` 設定が完全一致しない場合、差分ではなく全ファイルを解析します
   - `warnings` をカスタムしているプロジェクトでは、GitHub hosted runner で project PLT (`_build/default/rebar3_*.iplt`) を actions/cache で保存すると 2 回目以降が速くなります
   - self-hosted runner では `_build` が残るため追加のキャッシュは不要です
+
+## 出力
+
+- `otp-version`: インストールした Erlang/OTP のバージョン
+- `aws-lc-version`: インストールした AWS-LC のバージョン
+- `erlang-root-dir`: Erlang/OTP のインストールディレクトリ
+- `plt-path`: dialyzer のベース PLT のパス (`use-plt` が有効な場合のみファイルが存在します)
 
 ## 対応プラットフォーム
 
