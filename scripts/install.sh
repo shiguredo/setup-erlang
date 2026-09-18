@@ -6,10 +6,10 @@
 # from GitHub Releases, verifies the sha256 checksum, extracts it, and puts the
 # bin directory on PATH for the following steps.
 #
-# When INPUT_USE_PLT is true, the dialyzer base PLT (incremental) shipped with
-# the release is installed so that rebar3 can use it as the seed of its project
-# PLTs. The PLT is stored in the install directory (so that it is covered by
-# RUNNER_TOOL_CACHE and actions/cache as well) and copied to
+# When INPUT_USE_PLT is true (the default), the dialyzer base PLT (incremental)
+# shipped with the release is installed so that rebar3 can use it as the seed
+# of its project PLTs. The PLT is stored in the install directory (so that it
+# is covered by RUNNER_TOOL_CACHE and actions/cache as well) and copied to
 # $HOME/.cache/rebar3, which is where rebar3 looks for the base PLT by default.
 #
 set -euo pipefail
@@ -199,7 +199,7 @@ resolve_versions() {
     SOURCE_REF="$(printf '%s' "${row}" | cut -f6)"
     PLT_ASSET="$(printf '%s' "${row}" | cut -f7)"
     PLT_SHA256="$(printf '%s' "${row}" | cut -f8)"
-    if [[ "${INPUT_USE_PLT:-false}" == "true" && -z "${PLT_ASSET}" ]]; then
+    if [[ "${INPUT_USE_PLT:-true}" == "true" && -z "${PLT_ASSET}" ]]; then
         die "no PLT asset is registered for Erlang/OTP ${OTP_VERSION_RESOLVED} + AWS-LC ${AWS_LC_VERSION_RESOLVED} on ${TARGET}; run the Build Erlang/OTP workflow with plt_only to add one"
     fi
     RELEASE_TAG="otp-${OTP_VERSION_RESOLVED}-aws-lc-${AWS_LC_VERSION_RESOLVED}"
@@ -370,7 +370,7 @@ install_command() {
     fi
     add_to_path "${INSTALL_ROOT}/bin"
     verify_installation
-    if [[ "${INPUT_USE_PLT:-false}" == "true" ]]; then
+    if [[ "${INPUT_USE_PLT:-true}" == "true" ]]; then
         install_plt
     fi
     emit_outputs

@@ -33,9 +33,10 @@ inputs:
     description: >
       Download the dialyzer base PLT (incremental) of the release and install it
       at ~/.cache/rebar3, where rebar3 looks for the base PLT by default. The
-      release must contain the PLT asset
+      release must contain the PLT asset. Enabled by default; set to "false" to
+      skip the download
     required: false
-    default: "false"
+    default: "true"
 
 outputs:
   otp-version:

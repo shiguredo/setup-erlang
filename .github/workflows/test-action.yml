@@ -81,7 +81,6 @@ jobs:
           otp-version: "29.1"
           aws-lc-version: "v5.9.0"
           use-cache: "true"
-          use-plt: "true"
 
       - name: Smoke test the base PLT
         run: |
@@ -166,6 +165,31 @@ jobs:
             echo "the project PLT does not contain the base PLT modules"
             exit 1
           fi
+
+          # warnings をカスタムしていないプロジェクトでも使えることを確認する
+          default_project="${work_dir}/project-default"
+          mkdir -p "${default_project}/src"
+          cat > "${default_project}/rebar.config" <<'CONFIG'
+          {erl_opts, [debug_info]}.
+          {dialyzer, [incremental,
+                      {plt_apps, top_level_deps},
+                      {plt_location, local},
+                      {base_plt_location, global}]}.
+          CONFIG
+          cp "${project_dir}/src/testapp.app.src" "${default_project}/src/"
+          cp "${project_dir}/src/testapp.erl" "${default_project}/src/"
+
+          cd "${default_project}"
+          "${REBAR3_DIR}/rebar3" dialyzer -i > "${log}" 2>&1
+          cat "${log}"
+          if grep -q 'Creating base plt' "${log}"; then
+            echo "rebar3 rebuilt the base PLT with the default warnings"
+            exit 1
+          fi
+
+          # project PLT が残っていれば 2 回目は解析なしで通る
+          "${REBAR3_DIR}/rebar3" dialyzer -i > "${log}" 2>&1
+          grep -q 'Running incremental analysis' "${log}"
 
   resolve:
     name: Reject unregistered versions
