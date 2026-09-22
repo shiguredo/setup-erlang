@@ -31,13 +31,13 @@ jobs:
       - name: Install Erlang/OTP
         uses: ./
         with:
-          otp-version: "29.1"
+          otp-version: "29.1.1"
           aws-lc-version: "v5.9.0"
 
       - name: Install Erlang/OTP again
         uses: ./
         with:
-          otp-version: "29.1"
+          otp-version: "29.1.1"
           aws-lc-version: "v5.9.0"
 
       - name: Smoke test
@@ -78,7 +78,7 @@ jobs:
         id: setup
         uses: ./
         with:
-          otp-version: "29.1"
+          otp-version: "29.1.1"
           aws-lc-version: "v5.9.0"
           use-cache: "true"
 
