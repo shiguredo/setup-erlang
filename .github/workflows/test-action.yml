@@ -6,13 +6,72 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      otp_version:
+        description: Erlang/OTP version to test (defaults to the latest registered version)
+        required: false
+        type: string
+      aws_lc_version:
+        description: AWS-LC version to test (defaults to the latest registered version)
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      otp_version:
+        description: Erlang/OTP version to test (defaults to the latest registered version)
+        required: false
+        type: string
+      aws_lc_version:
+        description: AWS-LC version to test (defaults to the latest registered version)
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 jobs:
+  versions:
+    name: Resolve the versions under test
+    runs-on: ubuntu-slim
+    outputs:
+      otp_version: ${{ steps.versions.outputs.otp_version }}
+      aws_lc_version: ${{ steps.versions.outputs.aws_lc_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # workflow_call では既定の checkout が呼び出し元コミットを取るため、
+          # release ジョブが push した versions/builds.tsv を読めない。
+          # ref を明示してブランチの最新 (push 済みのマニフェスト) を取る
+          ref: ${{ github.ref }}
+
+      - name: Resolve the versions under test
+        id: versions
+        env:
+          INPUT_OTP_VERSION: ${{ inputs.otp_version }}
+          INPUT_AWS_LC_VERSION: ${{ inputs.aws_lc_version }}
+        run: |
+          set -euo pipefail
+          # 指定が無ければ versions/builds.tsv の最新 (OTP → AWS-LC の順にソート済み) を使う
+          otp_version="${INPUT_OTP_VERSION}"
+          if [[ -z "${otp_version}" ]]; then
+            otp_version="$(awk -F'\t' '!/^[[:space:]]*(#|$)/ && NF >= 6 { v = $1 } END { print v }' versions/builds.tsv)"
+          fi
+          aws_lc_version="${INPUT_AWS_LC_VERSION}"
+          if [[ -z "${aws_lc_version}" ]]; then
+            aws_lc_version="$(awk -F'\t' -v otp="${otp_version}" '!/^[[:space:]]*(#|$)/ && NF >= 6 && $1 == otp { v = $2 } END { print v }' versions/builds.tsv)"
+          fi
+          if [[ -z "${otp_version}" || -z "${aws_lc_version}" ]]; then
+            echo "no builds are registered in versions/builds.tsv" >&2
+            exit 1
+          fi
+          printf 'test-action: Erlang/OTP %s with AWS-LC %s\n' "${otp_version}" "${aws_lc_version}"
+          printf 'otp_version=%s\n' "${otp_version}" >> "${GITHUB_OUTPUT}"
+          printf 'aws_lc_version=%s\n' "${aws_lc_version}" >> "${GITHUB_OUTPUT}"
+
   install:
     name: Install (${{ matrix.runner }})
+    needs: versions
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -27,18 +86,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # ref の最新を取る (versions ジョブ参照)
+          ref: ${{ github.ref }}
 
       - name: Install Erlang/OTP
         uses: ./
         with:
-          otp-version: "29.1.1"
-          aws-lc-version: "v5.10.0"
+          otp-version: ${{ needs.versions.outputs.otp_version }}
+          aws-lc-version: ${{ needs.versions.outputs.aws_lc_version }}
 
       - name: Install Erlang/OTP again
         uses: ./
         with:
-          otp-version: "29.1.1"
-          aws-lc-version: "v5.10.0"
+          otp-version: ${{ needs.versions.outputs.otp_version }}
+          aws-lc-version: ${{ needs.versions.outputs.aws_lc_version }}
 
       - name: Smoke test
         run: |
@@ -64,6 +126,7 @@ jobs:
 
   plt:
     name: Base PLT
+    needs: versions
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -73,13 +136,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # ref の最新を取る (versions ジョブ参照)
+          ref: ${{ github.ref }}
 
       - name: Install Erlang/OTP with the base PLT
         id: setup
         uses: ./
         with:
-          otp-version: "29.1.1"
-          aws-lc-version: "v5.10.0"
+          otp-version: ${{ needs.versions.outputs.otp_version }}
+          aws-lc-version: ${{ needs.versions.outputs.aws_lc_version }}
           use-cache: "true"
 
       - name: Smoke test the base PLT
@@ -197,6 +263,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # ref の最新を取る (versions ジョブ参照)
+          ref: ${{ github.ref }}
 
       - name: Reject versions that are not registered
         run: |
