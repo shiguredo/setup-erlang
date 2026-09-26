@@ -6,7 +6,7 @@
 - uses: shiguredo/setup-erlang@main
   with:
     otp-version: "29.1.1"
-    aws-lc-version: "v5.9.0"
+    aws-lc-version: "v5.10.0"
 ```
 
 - ビルド済みの tar.gz をダウンロードしてインストールするだけです
@@ -21,7 +21,7 @@
 - uses: shiguredo/setup-erlang@main
   with:
     otp-version: "29.1.1"
-    aws-lc-version: "v5.9.0"
+    aws-lc-version: "v5.10.0"
     use-cache: "true"
 ```
 

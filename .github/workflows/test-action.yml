@@ -32,13 +32,13 @@ jobs:
         uses: ./
         with:
           otp-version: "29.1.1"
-          aws-lc-version: "v5.9.0"
+          aws-lc-version: "v5.10.0"
 
       - name: Install Erlang/OTP again
         uses: ./
         with:
           otp-version: "29.1.1"
-          aws-lc-version: "v5.9.0"
+          aws-lc-version: "v5.10.0"
 
       - name: Smoke test
         run: |
@@ -79,7 +79,7 @@ jobs:
         uses: ./
         with:
           otp-version: "29.1.1"
-          aws-lc-version: "v5.9.0"
+          aws-lc-version: "v5.10.0"
           use-cache: "true"
 
       - name: Smoke test the base PLT

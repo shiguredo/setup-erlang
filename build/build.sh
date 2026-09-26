@@ -18,7 +18,7 @@
 set -euo pipefail
 
 : "${OTP_VERSION:?OTP_VERSION is required (example: 29.1.1)}"
-: "${AWS_LC_VERSION:?AWS_LC_VERSION is required (example: v5.9.0)}"
+: "${AWS_LC_VERSION:?AWS_LC_VERSION is required (example: v5.10.0)}"
 : "${TARGET:?TARGET is required (example: x86_64-unknown-linux-gnu)}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
