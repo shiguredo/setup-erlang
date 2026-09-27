@@ -258,7 +258,7 @@ jobs:
           grep -q 'Running incremental analysis' "${log}"
 
   resolve:
-    name: Reject unregistered versions
+    name: Resolve versions
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -306,3 +306,101 @@ jobs:
             exit 1
           fi
           echo "resolve rejected the row without a PLT asset as expected"
+
+      - name: Resolve the latest version in local mode
+        run: |
+          set -euo pipefail
+          target="x86_64-unknown-linux-gnu"
+          expected_otp="$(awk -F'\t' -v target="${target}" '!/^[[:space:]]*(#|$)/ && NF >= 6 && $3 == target { v = $1 } END { print v }' versions/builds.tsv)"
+          expected_aws_lc="$(awk -F'\t' -v otp="${expected_otp}" -v target="${target}" '!/^[[:space:]]*(#|$)/ && NF >= 6 && $1 == otp && $3 == target { v = $2 } END { print v }' versions/builds.tsv)"
+
+          work_dir="$(mktemp -d)"
+          output="$(env -u GITHUB_ACTIONS -u RUNNER_TOOL_CACHE HOME="${work_dir}/home" bash scripts/install.sh resolve)"
+          printf '%s\n' "${output}"
+
+          [[ "$(printf '%s\n' "${output}" | sed -n 's/^otp_version=//p')" == "${expected_otp}" ]]
+          [[ "$(printf '%s\n' "${output}" | sed -n 's/^aws_lc_version=//p')" == "${expected_aws_lc}" ]]
+          [[ "$(printf '%s\n' "${output}" | sed -n 's/^install_root=//p')" == "${work_dir}/home/.local/share/setup-erlang/${expected_otp}-aws-lc-${expected_aws_lc}" ]]
+          echo "local mode resolved Erlang/OTP ${expected_otp} with AWS-LC ${expected_aws_lc}"
+
+      - name: Resolve when the script is read from stdin
+        run: |
+          set -euo pipefail
+          work_dir="$(mktemp -d)"
+          output="$(cat scripts/install.sh | env -u GITHUB_ACTIONS XDG_CACHE_HOME="${work_dir}/cache" SETUP_ERLANG_MANIFEST_URL="file://${PWD}/versions/builds.tsv" bash -s -- resolve --target aarch64-apple-darwin)"
+          printf '%s\n' "${output}"
+          test -f "${work_dir}/cache/setup-erlang/manifest.tsv"
+          printf '%s\n' "${output}" | grep -q '^otp_version='
+
+      - name: Resolve using the cached manifest when the download fails
+        run: |
+          set -euo pipefail
+          work_dir="$(mktemp -d)"
+          mkdir -p "${work_dir}/cache/setup-erlang"
+          cp versions/builds.tsv "${work_dir}/cache/setup-erlang/manifest.tsv"
+          output="$(env -u GITHUB_ACTIONS XDG_CACHE_HOME="${work_dir}/cache" SETUP_ERLANG_MANIFEST_URL="file:///nonexistent/builds.tsv" bash scripts/install.sh resolve --target aarch64-apple-darwin 2>/dev/null)"
+          printf '%s\n' "${output}"
+          printf '%s\n' "${output}" | grep -q '^otp_version='
+
+  local-install:
+    name: Local install (${{ matrix.runner }})
+    needs: versions
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # ref の最新を取る (versions ジョブ参照)
+          ref: ${{ github.ref }}
+
+      - name: Install Erlang/OTP as a local installer
+        env:
+          OTP_VERSION: ${{ needs.versions.outputs.otp_version }}
+          AWS_LC_VERSION: ${{ needs.versions.outputs.aws_lc_version }}
+          LOCAL_HOME: ${{ runner.temp }}/setup-erlang-home
+        run: |
+          set -euo pipefail
+          run_local() {
+            env -u GITHUB_ACTIONS -u GITHUB_OUTPUT -u GITHUB_PATH -u RUNNER_TOOL_CACHE \
+              HOME="${LOCAL_HOME}" \
+              "$@"
+          }
+          mkdir -p "${LOCAL_HOME}"
+          root="${LOCAL_HOME}/.local/share/setup-erlang"
+
+          # GitHub Actions の環境変数を外して、ローカルのインストーラーとして実行する
+          run_local bash scripts/install.sh install "${OTP_VERSION}" "${AWS_LC_VERSION}"
+
+          # current がインストールしたバージョンを指すこと
+          test -L "${root}/current"
+          test "$(readlink "${root}/current")" = "${OTP_VERSION}-aws-lc-${AWS_LC_VERSION}"
+
+          # current 経由の erl が AWS-LC で動くこと
+          output="$(PATH="${root}/current/bin:${PATH}" erl -noshell -eval '{ok, _} = application:ensure_all_started(crypto), [{_, _, VersionString} | _] = crypto:info_lib(), io:format("~s~n", [VersionString]), halt().')"
+          echo "crypto backend: ${output}"
+          case "${output}" in
+            *AWS-LC*) ;;
+            *)
+              echo "crypto is not linked against AWS-LC"
+              exit 1
+              ;;
+          esac
+
+          # 2 回目のインストールはダウンロードせずに成功すること
+          run_local bash scripts/install.sh install "${OTP_VERSION}" "${AWS_LC_VERSION}" > "${RUNNER_TEMP}/reinstall.log" 2>&1
+          grep -q 'is already installed' "${RUNNER_TEMP}/reinstall.log"
+
+          # current を切り替えられること
+          bash scripts/install.sh use --root "${root}" "${OTP_VERSION}" "${AWS_LC_VERSION}"
+          test "$(readlink "${root}/current")" = "${OTP_VERSION}-aws-lc-${AWS_LC_VERSION}"
+
+          # インストール済みのバージョンが表示されること
+          bash scripts/install.sh list --root "${root}" > "${RUNNER_TEMP}/list.log"
+          grep -Fq -- "* ${OTP_VERSION}-aws-lc-${AWS_LC_VERSION}" "${RUNNER_TEMP}/list.log"

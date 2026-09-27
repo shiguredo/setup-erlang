@@ -2,9 +2,25 @@
 #
 # setup-erlang installer.
 #
-# Resolves a prebuilt Erlang/OTP asset from versions/builds.tsv, downloads it
-# from GitHub Releases, verifies the sha256 checksum, extracts it, and puts the
-# bin directory on PATH for the following steps.
+# GitHub Actions の composite action からも、ローカルの Ubuntu / macOS からも
+# 同じスクリプトで Erlang/OTP をインストールできる。
+#
+# GitHub Actions:
+#   RUNNER_TOOL_CACHE 配下へインストールし、GITHUB_PATH / GITHUB_OUTPUT を通して
+#   後続ステップへ引き継ぐ。otp-version は完全一致で指定する。
+#
+# ローカル (GitHub Actions 以外):
+#   ${XDG_DATA_HOME:-$HOME/.local/share}/setup-erlang 配下へインストールし、
+#   <base>/current をインストールしたバージョンへ向けた symlink にして、
+#   PATH の設定方法を案内する。otp-version を省略すると最新をインストールする。
+#
+#   erl は $0 の位置から ROOTDIR を求めるため、bin/erl などのファイル単位の
+#   symlink を PATH に置くと動かない。必ず <base>/current のディレクトリ
+#   symlink を PATH に通すこと。
+#
+# マニフェスト (versions/builds.tsv) は、リポジトリ内で実行した場合はその
+# チェックアウトのものを使い、それ以外は GitHub からダウンロードして
+# ${XDG_CACHE_HOME:-$HOME/.cache}/setup-erlang/manifest.tsv にキャッシュする。
 #
 # When INPUT_USE_PLT is true (the default), the dialyzer base PLT (incremental)
 # shipped with the release is installed so that rebar3 can use it as the seed
@@ -16,6 +32,23 @@ set -euo pipefail
 
 ACTION_REPOSITORY="${SETUP_ERLANG_REPOSITORY:-shiguredo/setup-erlang}"
 RELEASE_BASE_URL="${SETUP_ERLANG_RELEASE_BASE_URL:-https://github.com/${ACTION_REPOSITORY}/releases/download}"
+MANIFEST_REF="${SETUP_ERLANG_MANIFEST_REF:-main}"
+
+# GitHub Actions では完全一致のバージョンだけを受け付け、ローカルでは latest を
+# 受け付ける (省略時は latest 扱い)
+ACTION_MODE=false
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    ACTION_MODE=true
+fi
+
+# プリビルドバイナリは Ubuntu 24.04 (glibc 2.39) でビルドしており、
+# 最大で glibc 2.38 のシンボルを参照する
+GLIBC_REQUIRED_MAJOR=2
+GLIBC_REQUIRED_MINOR=38
+
+COMMAND=install
+USE_VERSION=
+USE_AWS_LC_VERSION=
 
 die() {
     printf 'setup-erlang: %s\n' "$1" >&2
@@ -24,25 +57,129 @@ die() {
 
 usage() {
     cat <<'USAGE'
-Usage: install.sh [resolve|install]
+Usage: install.sh [command] [options] [otp-version [aws-lc-version]]
 
-  resolve  Resolve the version, download URL, checksum, and install directory
-  install  Install Erlang/OTP (default)
+Install prebuilt Erlang/OTP with AWS-LC. Outside GitHub Actions the latest
+version is installed when no version is specified.
+
+Commands:
+  install   Install Erlang/OTP (default)
+  resolve   Print the resolved version and paths without downloading
+  list      Show the installed and available versions
+  use       Switch the current version to an installed one
+
+Options:
+  --otp-version VERSION     Erlang/OTP version (default: latest)
+  --aws-lc-version VERSION  AWS-LC version (default: latest for the version)
+  --target TARGET           Target triple override (example: aarch64-apple-darwin)
+  --root DIR                Install root (default: ${XDG_DATA_HOME:-$HOME/.local/share}/setup-erlang)
+  --no-plt                  Do not install the dialyzer base PLT
+  -h, --help                Show this help
+
+Environment:
+  INPUT_OTP_VERSION         Same as --otp-version
+  INPUT_AWS_LC_VERSION      Same as --aws-lc-version
+  INPUT_OTP_TARGET          Same as --target
+  INPUT_USE_PLT             "false" disables the base PLT
+  SETUP_ERLANG_ROOT         Same as --root
+  SETUP_ERLANG_MANIFEST     Manifest file to use instead of the built-in one
+  SETUP_ERLANG_MANIFEST_URL Manifest URL (default: raw.githubusercontent.com)
+  SETUP_ERLANG_MANIFEST_REF Manifest ref used for the URL (default: main)
+
+Examples:
+  curl -fsSL https://raw.githubusercontent.com/shiguredo/setup-erlang/main/scripts/install.sh | bash
+  curl -fsSL .../install.sh | bash -s -- 29.1.1
+  curl -fsSL .../install.sh | bash -s -- list
+  install.sh use 29.1.1 v5.10.0
 USAGE
 }
 
-script_dir() {
-    cd "$(dirname "${BASH_SOURCE[0]}")" && pwd
+script_path() {
+    # curl | bash のように標準入力から実行された場合は空になる
+    local src="${BASH_SOURCE[0]:-}"
+    if [[ -n "${src}" && -f "${src}" ]]; then
+        printf '%s\n' "${src}"
+    fi
+}
+
+try_download_file() {
+    local url="$1"
+    local destination="$2"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --retry 3 --retry-delay 5 -o "${destination}" "${url}"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O "${destination}" "${url}"
+    else
+        return 1
+    fi
+}
+
+download_file() {
+    local url="$1"
+    local destination="$2"
+    try_download_file "${url}" "${destination}" ||
+        die "failed to download ${url}; curl or wget is required"
+}
+
+manifest_cache_file() {
+    local cache_home="${XDG_CACHE_HOME:-}"
+    if [[ -z "${cache_home}" ]]; then
+        [[ -n "${HOME:-}" ]] || die 'HOME or XDG_CACHE_HOME is required to cache the manifest'
+        cache_home="${HOME}/.cache"
+    fi
+    printf '%s\n' "${cache_home}/setup-erlang/manifest.tsv"
+}
+
+manifest_url() {
+    printf '%s\n' "${SETUP_ERLANG_MANIFEST_URL:-https://raw.githubusercontent.com/${ACTION_REPOSITORY}/${MANIFEST_REF}/versions/builds.tsv}"
+}
+
+fetch_manifest() {
+    local cache_file
+    local url
+    local tmp
+    cache_file="$(manifest_cache_file)"
+    url="$(manifest_url)"
+    mkdir -p "$(dirname "${cache_file}")"
+    tmp="${cache_file}.tmp.$$"
+    printf 'setup-erlang: downloading the manifest from %s\n' "${url}" >&2
+    if try_download_file "${url}" "${tmp}" && [[ -s "${tmp}" ]]; then
+        mv "${tmp}" "${cache_file}"
+    else
+        rm -f "${tmp}"
+        if [[ ! -s "${cache_file}" ]]; then
+            die "failed to download the manifest from ${url}"
+        fi
+        printf 'setup-erlang: using the cached manifest at %s\n' "${cache_file}" >&2
+    fi
+    printf '%s\n' "${cache_file}"
 }
 
 manifest_path() {
     if [[ -n "${SETUP_ERLANG_MANIFEST:-}" ]]; then
+        [[ -f "${SETUP_ERLANG_MANIFEST}" ]] || die "manifest not found: ${SETUP_ERLANG_MANIFEST}"
         printf '%s\n' "${SETUP_ERLANG_MANIFEST}"
-    elif [[ -n "${GITHUB_ACTION_PATH:-}" ]]; then
-        printf '%s\n' "${GITHUB_ACTION_PATH}/versions/builds.tsv"
-    else
-        printf '%s\n' "$(script_dir)/../versions/builds.tsv"
+        return
     fi
+    # composite action は自分自身のチェックアウトのマニフェストを使う
+    if [[ -n "${GITHUB_ACTION_PATH:-}" ]]; then
+        [[ -f "${GITHUB_ACTION_PATH}/versions/builds.tsv" ]] ||
+            die "manifest not found: ${GITHUB_ACTION_PATH}/versions/builds.tsv"
+        printf '%s\n' "${GITHUB_ACTION_PATH}/versions/builds.tsv"
+        return
+    fi
+    # リポジトリ内で実行した場合はチェックアウトのマニフェストを使う
+    local src
+    src="$(script_path)"
+    if [[ -n "${src}" ]]; then
+        local local_manifest
+        local_manifest="$(cd "$(dirname "${src}")/.." && pwd)/versions/builds.tsv"
+        if [[ -f "${local_manifest}" ]]; then
+            printf '%s\n' "${local_manifest}"
+            return
+        fi
+    fi
+    fetch_manifest
 }
 
 set_output() {
@@ -55,26 +192,63 @@ set_output() {
     fi
 }
 
+# $1 が "stdout" のときだけ、GITHUB_OUTPUT が無い場合に標準出力へ出す
+# (ローカルの install では人間向けの案内だけを出す)
+emit_outputs() {
+    local sink="${1:-}"
+    if [[ -z "${GITHUB_OUTPUT:-}" && "${sink}" != "stdout" ]]; then
+        return 0
+    fi
+    set_output otp_version "${OTP_VERSION_RESOLVED}"
+    set_output aws_lc_version "${AWS_LC_VERSION_RESOLVED}"
+    set_output install_root "${INSTALL_ROOT}"
+    set_output plt_path "${PLT_PATH}"
+}
+
 detect_target() {
     if [[ -n "${INPUT_OTP_TARGET:-}" ]]; then
         printf '%s\n' "${INPUT_OTP_TARGET}"
         return
     fi
-    case "${RUNNER_OS:-}:${RUNNER_ARCH:-}" in
-        Linux:X64)
+    if [[ -n "${RUNNER_OS:-}" || -n "${RUNNER_ARCH:-}" ]]; then
+        case "${RUNNER_OS:-}:${RUNNER_ARCH:-}" in
+            Linux:X64)
+                printf '%s\n' 'x86_64-unknown-linux-gnu'
+                ;;
+            Linux:ARM64)
+                printf '%s\n' 'aarch64-unknown-linux-gnu'
+                ;;
+            macOS:ARM64)
+                printf '%s\n' 'aarch64-apple-darwin'
+                ;;
+            macOS:X64)
+                die 'macOS x64 is not supported; only macOS arm64 (aarch64-apple-darwin) is available'
+                ;;
+            *)
+                die "unsupported runner: RUNNER_OS=${RUNNER_OS:-<unset>} RUNNER_ARCH=${RUNNER_ARCH:-<unset>}"
+                ;;
+        esac
+        return
+    fi
+    local os
+    local machine
+    os="$(uname -s)"
+    machine="$(uname -m)"
+    case "${os}:${machine}" in
+        Linux:x86_64)
             printf '%s\n' 'x86_64-unknown-linux-gnu'
             ;;
-        Linux:ARM64)
+        Linux:aarch64 | Linux:arm64)
             printf '%s\n' 'aarch64-unknown-linux-gnu'
             ;;
-        macOS:ARM64)
+        Darwin:arm64)
             printf '%s\n' 'aarch64-apple-darwin'
             ;;
-        macOS:X64)
+        Darwin:x86_64)
             die 'macOS x64 is not supported; only macOS arm64 (aarch64-apple-darwin) is available'
             ;;
         *)
-            die "unsupported runner: RUNNER_OS=${RUNNER_OS:-<unset>} RUNNER_ARCH=${RUNNER_ARCH:-<unset>}"
+            die "unsupported platform: ${os} ${machine}"
             ;;
     esac
 }
@@ -109,9 +283,22 @@ available_targets() {
         sort -u | tr '\n' ' '
 }
 
+# latest は対象ターゲットの行がある中で最後 (最新) の Erlang/OTP を選ぶ
 select_otp_version() {
     local file="$1"
-    local requested="$2"
+    local target="$2"
+    local requested="$3"
+    if [[ "${requested}" == "latest" ]]; then
+        manifest_rows "${file}" |
+            awk -F'\t' -v target="${target}" '
+                NF >= 6 && $3 == target {
+                    found = $1
+                }
+                END {
+                    print found
+                }'
+        return
+    fi
     manifest_rows "${file}" |
         awk -F'\t' -v req="${requested}" '
             NF >= 6 && $1 == req {
@@ -122,11 +309,23 @@ select_otp_version() {
             }'
 }
 
+# latest (または未指定) は対象ターゲットの行がある中で最後 (最新) の AWS-LC を選ぶ
 select_aws_lc_version() {
     local file="$1"
     local otp_version="$2"
     local target="$3"
     local requested="$4"
+    if [[ -z "${requested}" || "${requested}" == "latest" ]]; then
+        manifest_rows "${file}" |
+            awk -F'\t' -v otp="${otp_version}" -v target="${target}" '
+                NF >= 6 && $1 == otp && $3 == target {
+                    found = $2
+                }
+                END {
+                    print found
+                }'
+        return
+    fi
     manifest_rows "${file}" |
         awk -F'\t' -v otp="${otp_version}" -v target="${target}" -v req="${requested}" '
             NF >= 6 && $1 == otp && $3 == target &&
@@ -153,11 +352,29 @@ select_row() {
     printf '%s\n' "${rows}"
 }
 
+install_base() {
+    if [[ -n "${SETUP_ERLANG_ROOT:-}" ]]; then
+        printf '%s\n' "${SETUP_ERLANG_ROOT}"
+    elif [[ -n "${RUNNER_TOOL_CACHE:-}" ]]; then
+        printf '%s\n' "${RUNNER_TOOL_CACHE}/setup-erlang"
+    else
+        local data_home="${XDG_DATA_HOME:-}"
+        if [[ -z "${data_home}" ]]; then
+            [[ -n "${HOME:-}" ]] || die 'HOME or XDG_DATA_HOME is required to determine the install directory'
+            data_home="${HOME}/.local/share"
+        fi
+        printf '%s\n' "${data_home}/setup-erlang"
+    fi
+}
+
 install_root_for() {
     local otp_version="$1"
     local aws_lc_version="$2"
-    local base="${RUNNER_TOOL_CACHE:-${HOME}/.setup-erlang}"
-    printf '%s\n' "${base}/setup-erlang/${otp_version}-aws-lc-${aws_lc_version}"
+    printf '%s\n' "$(install_base)/${otp_version}-aws-lc-${aws_lc_version}"
+}
+
+current_link() {
+    printf '%s\n' "$(install_base)/current"
 }
 
 plt_path_for() {
@@ -174,13 +391,21 @@ resolve_versions() {
         die "no builds are registered in ${manifest}; run the Build Erlang/OTP workflow first"
     fi
 
-    [[ -n "${INPUT_OTP_VERSION:-}" ]] || die 'otp-version is required'
-
     TARGET="$(detect_target)"
 
-    OTP_VERSION_RESOLVED="$(select_otp_version "${manifest}" "${INPUT_OTP_VERSION}")"
+    local requested_otp="${INPUT_OTP_VERSION:-}"
+    if [[ -z "${requested_otp}" || "${requested_otp}" == "latest" ]]; then
+        [[ "${ACTION_MODE}" == "false" ]] ||
+            die 'otp-version is required in GitHub Actions and must be an exact version (example: 29.1.1)'
+        requested_otp="latest"
+    fi
+
+    OTP_VERSION_RESOLVED="$(select_otp_version "${manifest}" "${TARGET}" "${requested_otp}")"
     if [[ -z "${OTP_VERSION_RESOLVED}" ]]; then
-        die "no Erlang/OTP build matches otp-version '${INPUT_OTP_VERSION}' (available: $(available_otp_versions "${manifest}"))"
+        if [[ "${requested_otp}" == "latest" ]]; then
+            die "no Erlang/OTP build is registered for ${TARGET}"
+        fi
+        die "no Erlang/OTP build matches otp-version '${requested_otp}' (available: $(available_otp_versions "${manifest}"))"
     fi
 
     AWS_LC_VERSION_RESOLVED="$(select_aws_lc_version "${manifest}" "${OTP_VERSION_RESOLVED}" "${TARGET}" "${INPUT_AWS_LC_VERSION:-}")"
@@ -209,24 +434,37 @@ resolve_versions() {
     PLT_PATH="$(plt_path_for "${INSTALL_ROOT}" "${OTP_VERSION_RESOLVED}")"
 }
 
-emit_outputs() {
-    set_output otp_version "${OTP_VERSION_RESOLVED}"
-    set_output aws_lc_version "${AWS_LC_VERSION_RESOLVED}"
-    set_output install_root "${INSTALL_ROOT}"
-    set_output plt_path "${PLT_PATH}"
-}
-
-download_file() {
-    local url="$1"
-    local destination="$2"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --retry 3 --retry-delay 5 -o "${destination}" "${url}" ||
-            die "failed to download ${url}"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "${destination}" "${url}" ||
-            die "failed to download ${url}"
-    else
-        die "curl or wget is required to download ${url}"
+# Ubuntu 22.04 以前 (glibc < 2.38) ではプリビルドバイナリが動かないため、
+# ダウンロードの前に分かりやすく失敗させる
+check_linux_glibc() {
+    [[ "$(uname -s)" == 'Linux' ]] || return 0
+    command -v ldd >/dev/null 2>&1 || return 0
+    local running
+    running="$(ldd --version 2>/dev/null | awk 'NR == 1 {
+        for (i = 1; i <= NF; i++) {
+            if ($i ~ /^[0-9]+\.[0-9]+$/) {
+                print $i
+                exit
+            }
+        }
+    }')"
+    if [[ -z "${running}" ]]; then
+        die 'glibc is required; this Linux does not look like a glibc system (Ubuntu 24.04 or newer is supported)'
+    fi
+    if ! awk -v running="${running}" \
+        -v required_major="${GLIBC_REQUIRED_MAJOR}" \
+        -v required_minor="${GLIBC_REQUIRED_MINOR}" '
+        BEGIN {
+            split(running, part, ".")
+            if (part[1] > required_major) {
+                exit 0
+            }
+            if (part[1] == required_major && part[2] >= required_minor) {
+                exit 0
+            }
+            exit 1
+        }'; then
+        die "glibc ${running} is too old; glibc ${GLIBC_REQUIRED_MAJOR}.${GLIBC_REQUIRED_MINOR} or newer is required (Ubuntu 24.04 or newer is supported)"
     fi
 }
 
@@ -261,6 +499,10 @@ verify_installation() {
     if ! output="$(
         "${erl_bin}" -noshell -eval '{ok, _} = application:ensure_all_started(crypto), [{_, _, VersionString} | _] = crypto:info_lib(), io:format("~s~n", [VersionString]), halt().' 2>&1
     )"; then
+        if [[ "${output}" == *GLIBC_* ]]; then
+            die "Erlang/OTP failed to start: ${output}
+glibc ${GLIBC_REQUIRED_MAJOR}.${GLIBC_REQUIRED_MINOR} or newer is required (Ubuntu 24.04 or newer is supported)"
+        fi
         die "Erlang/OTP failed to start: ${output}"
     fi
     case "${output}" in
@@ -353,14 +595,157 @@ install_archive() {
     rm -rf "${tmp_dir}"
 }
 
+# current は相対 symlink にしておく (base ごと移動しても壊れない)
+update_current_link() {
+    local base
+    local target
+    base="$(install_base)"
+    target="${OTP_VERSION_RESOLVED}-aws-lc-${AWS_LC_VERSION_RESOLVED}"
+    mkdir -p "${base}"
+    ln -sfn "${target}" "${base}/current"
+    printf 'setup-erlang: %s -> %s\n' "${base}/current" "${target}"
+}
+
+is_on_path() {
+    local directory="$1"
+    local entry
+    local path="${PATH:-}"
+    local IFS=':'
+    for entry in ${path}; do
+        if [[ "${entry}" == "${directory}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+shell_profile_hint() {
+    # シェルの設定ファイルはチルダのまま表示したい
+    # shellcheck disable=SC2088
+    case "${SHELL:-}" in
+        */zsh)
+            printf '%s\n' '~/.zshrc'
+            ;;
+        */bash)
+            printf '%s\n' '~/.bashrc'
+            ;;
+        *) printf '%s\n' 'your shell profile' ;;
+    esac
+}
+
+print_path_hint() {
+    local bin="$1"
+    if is_on_path "${bin}"; then
+        printf 'setup-erlang: %s is already on PATH; run "erl" to start it\n' "${bin}"
+        return
+    fi
+    printf 'setup-erlang: add the following line to your shell profile (%s):\n' "$(shell_profile_hint)"
+    # $PATH は展開させず、そのままコピーしてもらう
+    # shellcheck disable=SC2016
+    printf '\n  export PATH="%s:$PATH"\n\n' "${bin}"
+    printf 'setup-erlang: then run "erl" (restart the shell or source the profile first)\n'
+}
+
+list_command() {
+    local base
+    base="$(install_base)"
+    local current_target=""
+    if [[ -L "${base}/current" ]]; then
+        current_target="$(basename "$(readlink "${base}/current")")"
+    fi
+    printf 'setup-erlang: installed under %s\n' "${base}"
+    local found=false
+    local dir
+    local name
+    for dir in "${base}"/*; do
+        [[ -d "${dir}" && ! -L "${dir}" ]] || continue
+        name="$(basename "${dir}")"
+        found=true
+        if [[ "${name}" == "${current_target}" ]]; then
+            printf '  * %s\n' "${name}"
+        else
+            printf '    %s\n' "${name}"
+        fi
+    done
+    if [[ "${found}" == "false" ]]; then
+        printf '  (none)\n'
+    fi
+
+    local manifest
+    manifest="$(manifest_path)"
+    TARGET="$(detect_target)"
+    printf 'setup-erlang: available for %s\n' "${TARGET}"
+    manifest_rows "${manifest}" |
+        awk -F'\t' -v target="${TARGET}" '
+            NF >= 6 && $3 == target {
+                if (!($1 in seen)) {
+                    seen[$1] = 1
+                    order[++count] = $1
+                }
+                key = $1 SUBSEP $2
+                if (!(key in pair)) {
+                    pair[key] = 1
+                    versions[$1] = versions[$1] " " $2
+                }
+            }
+            END {
+                for (i = count; i >= 1; i--) {
+                    v = versions[order[i]]
+                    sub(/^ /, "", v)
+                    printf "  %s  %s\n", order[i], v
+                }
+            }'
+}
+
+use_command() {
+    [[ -n "${USE_VERSION}" ]] || die 'usage: install.sh use <otp-version> [aws-lc-version]'
+    [[ "${USE_VERSION}" != "latest" ]] ||
+        die 'use requires an exact version; run "install.sh list" to see the installed versions'
+
+    local base
+    base="$(install_base)"
+    local candidate=""
+    if [[ -n "${USE_AWS_LC_VERSION}" ]]; then
+        local name
+        for name in "${USE_VERSION}-aws-lc-${USE_AWS_LC_VERSION}" "${USE_VERSION}-aws-lc-v${USE_AWS_LC_VERSION}"; do
+            if [[ -d "${base}/${name}" ]]; then
+                candidate="${name}"
+                break
+            fi
+        done
+    else
+        local matches=()
+        local dir
+        for dir in "${base}/${USE_VERSION}-aws-lc-"*; do
+            [[ -d "${dir}" && ! -L "${dir}" ]] || continue
+            matches+=("$(basename "${dir}")")
+        done
+        if (( ${#matches[@]} == 1 )); then
+            candidate="${matches[0]}"
+        elif (( ${#matches[@]} > 1 )); then
+            printf 'setup-erlang: multiple AWS-LC versions are installed for Erlang/OTP %s:\n' "${USE_VERSION}" >&2
+            printf '  %s\n' "${matches[@]}" >&2
+            die "specify the AWS-LC version: install.sh use ${USE_VERSION} <aws-lc-version>"
+        fi
+    fi
+    [[ -n "${candidate}" ]] ||
+        die "Erlang/OTP ${USE_VERSION} is not installed under ${base}; run \"install.sh list\" to see the installed versions"
+
+    mkdir -p "${base}"
+    ln -sfn "${candidate}" "${base}/current"
+    printf 'setup-erlang: %s -> %s\n' "${base}/current" "${candidate}"
+    print_path_hint "${base}/current/bin"
+}
+
 resolve_command() {
     resolve_versions
-    emit_outputs
+    emit_outputs stdout
     printf 'setup-erlang: resolved Erlang/OTP %s with AWS-LC %s for %s (source %s)\n' \
         "${OTP_VERSION_RESOLVED}" "${AWS_LC_VERSION_RESOLVED}" "${TARGET}" "${SOURCE_REF}"
 }
 
 install_command() {
+    check_linux_glibc
     resolve_versions
     if [[ -f "${INSTALL_ROOT}/.setup-erlang-complete" ]]; then
         printf 'setup-erlang: Erlang/OTP %s with AWS-LC %s is already installed at %s\n' \
@@ -376,27 +761,144 @@ install_command() {
     emit_outputs
     printf 'setup-erlang: installed Erlang/OTP %s with AWS-LC %s at %s\n' \
         "${OTP_VERSION_RESOLVED}" "${AWS_LC_VERSION_RESOLVED}" "${INSTALL_ROOT}"
+    if [[ "${ACTION_MODE}" == "false" ]]; then
+        update_current_link
+        print_path_hint "$(current_link)/bin"
+    fi
 }
 
-main() {
-    local command="${1:-install}"
-    case "${command}" in
-        resolve)
-            resolve_command
+# コマンドとオプションを解釈する。オプションは環境変数より優先され、
+# install / resolve ではバージョンを位置引数でも指定できる
+parse_args() {
+    local positional=()
+    while (( $# > 0 )); do
+        case "$1" in
+            install | resolve | list | use | help)
+                COMMAND="$1"
+                shift
+                ;;
+            -h | --help)
+                COMMAND=help
+                shift
+                ;;
+            --otp-version)
+                [[ $# -ge 2 ]] || die '--otp-version requires a value'
+                INPUT_OTP_VERSION="$2"
+                shift 2
+                ;;
+            --otp-version=*)
+                INPUT_OTP_VERSION="${1#*=}"
+                shift
+                ;;
+            --aws-lc-version)
+                [[ $# -ge 2 ]] || die '--aws-lc-version requires a value'
+                INPUT_AWS_LC_VERSION="$2"
+                shift 2
+                ;;
+            --aws-lc-version=*)
+                INPUT_AWS_LC_VERSION="${1#*=}"
+                shift
+                ;;
+            --target)
+                [[ $# -ge 2 ]] || die '--target requires a value'
+                INPUT_OTP_TARGET="$2"
+                shift 2
+                ;;
+            --target=*)
+                INPUT_OTP_TARGET="${1#*=}"
+                shift
+                ;;
+            --root)
+                [[ $# -ge 2 ]] || die '--root requires a value'
+                SETUP_ERLANG_ROOT="$2"
+                shift 2
+                ;;
+            --root=*)
+                SETUP_ERLANG_ROOT="${1#*=}"
+                shift
+                ;;
+            --no-plt)
+                INPUT_USE_PLT=false
+                shift
+                ;;
+            --)
+                shift
+                while (( $# > 0 )); do
+                    positional+=("$1")
+                    shift
+                done
+                ;;
+            -*)
+                usage >&2
+                die "unknown option: $1"
+                ;;
+            *)
+                positional+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    case "${COMMAND}" in
+        install | resolve)
+            if (( ${#positional[@]} > 2 )); then
+                usage >&2
+                die 'too many arguments'
+            fi
+            if (( ${#positional[@]} >= 1 )) && [[ -z "${INPUT_OTP_VERSION:-}" ]]; then
+                INPUT_OTP_VERSION="${positional[0]}"
+            fi
+            if (( ${#positional[@]} >= 2 )) && [[ -z "${INPUT_AWS_LC_VERSION:-}" ]]; then
+                INPUT_AWS_LC_VERSION="${positional[1]}"
+            fi
             ;;
-        install)
-            install_command
-            ;;
-        -h | --help | help)
-            usage
+        use)
+            if (( ${#positional[@]} >= 1 )); then
+                USE_VERSION="${positional[0]}"
+            fi
+            if (( ${#positional[@]} >= 2 )); then
+                USE_AWS_LC_VERSION="${positional[1]}"
+            fi
+            if (( ${#positional[@]} > 2 )); then
+                usage >&2
+                die 'too many arguments'
+            fi
             ;;
         *)
-            usage >&2
-            die "unknown command: ${command}"
+            if (( ${#positional[@]} > 0 )); then
+                usage >&2
+                die "unexpected argument: ${positional[0]}"
+            fi
             ;;
     esac
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+main() {
+    parse_args "$@"
+    case "${COMMAND}" in
+        install)
+            install_command
+            ;;
+        resolve)
+            resolve_command
+            ;;
+        list)
+            list_command
+            ;;
+        use)
+            use_command
+            ;;
+        help)
+            usage
+            ;;
+        *)
+            usage >&2
+            die "unknown command: ${COMMAND}"
+            ;;
+    esac
+}
+
+# 実行時 (curl | bash を含む) だけ main を呼ぶ。source された場合は呼ばない
+if [[ -z "${BASH_SOURCE[0]:-}" || "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
