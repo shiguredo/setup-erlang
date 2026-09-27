@@ -315,7 +315,7 @@ jobs:
           expected_aws_lc="$(awk -F'\t' -v otp="${expected_otp}" -v target="${target}" '!/^[[:space:]]*(#|$)/ && NF >= 6 && $1 == otp && $3 == target { v = $2 } END { print v }' versions/builds.tsv)"
 
           work_dir="$(mktemp -d)"
-          output="$(env -u GITHUB_ACTIONS -u RUNNER_TOOL_CACHE HOME="${work_dir}/home" bash scripts/install.sh resolve)"
+          output="$(env -u GITHUB_ACTIONS -u GITHUB_OUTPUT -u GITHUB_PATH -u RUNNER_TOOL_CACHE HOME="${work_dir}/home" bash scripts/install.sh resolve)"
           printf '%s\n' "${output}"
 
           [[ "$(printf '%s\n' "${output}" | sed -n 's/^otp_version=//p')" == "${expected_otp}" ]]
@@ -327,7 +327,7 @@ jobs:
         run: |
           set -euo pipefail
           work_dir="$(mktemp -d)"
-          output="$(cat scripts/install.sh | env -u GITHUB_ACTIONS XDG_CACHE_HOME="${work_dir}/cache" SETUP_ERLANG_MANIFEST_URL="file://${PWD}/versions/builds.tsv" bash -s -- resolve --target aarch64-apple-darwin)"
+          output="$(cat scripts/install.sh | env -u GITHUB_ACTIONS -u GITHUB_OUTPUT -u GITHUB_PATH XDG_CACHE_HOME="${work_dir}/cache" SETUP_ERLANG_MANIFEST_URL="file://${PWD}/versions/builds.tsv" bash -s -- resolve --target aarch64-apple-darwin)"
           printf '%s\n' "${output}"
           test -f "${work_dir}/cache/setup-erlang/manifest.tsv"
           printf '%s\n' "${output}" | grep -q '^otp_version='
@@ -338,7 +338,7 @@ jobs:
           work_dir="$(mktemp -d)"
           mkdir -p "${work_dir}/cache/setup-erlang"
           cp versions/builds.tsv "${work_dir}/cache/setup-erlang/manifest.tsv"
-          output="$(env -u GITHUB_ACTIONS XDG_CACHE_HOME="${work_dir}/cache" SETUP_ERLANG_MANIFEST_URL="file:///nonexistent/builds.tsv" bash scripts/install.sh resolve --target aarch64-apple-darwin 2>/dev/null)"
+          output="$(env -u GITHUB_ACTIONS -u GITHUB_OUTPUT -u GITHUB_PATH XDG_CACHE_HOME="${work_dir}/cache" SETUP_ERLANG_MANIFEST_URL="file:///nonexistent/builds.tsv" bash scripts/install.sh resolve --target aarch64-apple-darwin 2>/dev/null)"
           printf '%s\n' "${output}"
           printf '%s\n' "${output}" | grep -q '^otp_version='
 
