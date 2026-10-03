@@ -8,9 +8,9 @@ on:
         required: true
         type: string
       aws_lc_version:
-        description: AWS-LC version (example v5.10.0)
+        description: AWS-LC version (example v5.11.0)
         required: true
-        default: v5.10.0
+        default: v5.11.0
         type: string
       source_repository:
         description: Erlang/OTP repository

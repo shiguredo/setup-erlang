@@ -15,7 +15,7 @@ inputs:
     required: true
   aws-lc-version:
     description: >
-      AWS-LC version to install. Accepts "v5.10.0" or "5.10.0". Defaults to the
+      AWS-LC version to install. Accepts "v5.11.0" or "5.11.0". Defaults to the
       latest AWS-LC version built for the specified Erlang/OTP version
     required: false
   otp-target:

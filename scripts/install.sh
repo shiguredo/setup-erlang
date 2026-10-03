@@ -90,7 +90,7 @@ Examples:
   curl -fsSL https://raw.githubusercontent.com/shiguredo/setup-erlang/main/scripts/install.sh | bash
   curl -fsSL .../install.sh | bash -s -- 29.1.1
   curl -fsSL .../install.sh | bash -s -- list
-  install.sh use 29.1.1 v5.10.0
+  install.sh use 29.1.1 v5.11.0
 USAGE
 }
 

@@ -12,7 +12,7 @@ AWS-LC を静的リンクしたビルド済み Erlang/OTP をインストール�
 - uses: shiguredo/setup-erlang@main
   with:
     otp-version: "29.1.1"
-    aws-lc-version: "v5.10.0"
+    aws-lc-version: "v5.11.0"
 ```
 
 - `otp-version` は完全一致で指定します (例: `29.1.1`)
@@ -24,7 +24,7 @@ AWS-LC を静的リンクしたビルド済み Erlang/OTP をインストール�
 - uses: shiguredo/setup-erlang@main
   with:
     otp-version: "29.1.1"
-    aws-lc-version: "v5.10.0"
+    aws-lc-version: "v5.11.0"
     use-cache: "true"
 ```
 
@@ -63,7 +63,7 @@ $ curl -fsSL https://raw.githubusercontent.com/shiguredo/setup-erlang/main/scrip
 $ curl -fsSL https://raw.githubusercontent.com/shiguredo/setup-erlang/main/scripts/install.sh | bash -s -- 29.1.1
 
 # AWS-LC も指定してインストールする
-$ curl -fsSL https://raw.githubusercontent.com/shiguredo/setup-erlang/main/scripts/install.sh | bash -s -- 29.1.1 v5.10.0
+$ curl -fsSL https://raw.githubusercontent.com/shiguredo/setup-erlang/main/scripts/install.sh | bash -s -- 29.1.1 v5.11.0
 ```
 
 インストールの最後に表示される `export PATH` をシェルの設定ファイルに追加すると `erl` が使えるようになります。
@@ -83,12 +83,12 @@ $ erl -noshell -eval 'io:format("~s~n", [erlang:system_info(otp_release)]), halt
 $ curl -fsSL -o setup-erlang.sh https://raw.githubusercontent.com/shiguredo/setup-erlang/main/scripts/install.sh
 $ bash setup-erlang.sh list
 setup-erlang: installed under /Users/example/.local/share/setup-erlang
-  * 29.1.1-aws-lc-v5.10.0
+  * 29.1.1-aws-lc-v5.11.0
 setup-erlang: available for aarch64-apple-darwin
-  29.1.1  v5.9.0 v5.10.0
+  29.1.1  v5.9.0 v5.10.0 v5.11.0
   29.1  v5.9.0
   29.0.6  v5.8.0
-$ bash setup-erlang.sh use 29.1.1 v5.10.0
+$ bash setup-erlang.sh use 29.1.1 v5.11.0
 ```
 
 - `list` はインストール済みのバージョン (先頭の `*` が `current`) と、その環境で利用できるバージョンを表示します
@@ -97,7 +97,7 @@ $ bash setup-erlang.sh use 29.1.1 v5.10.0
 ### オプションと環境変数
 
 - `--otp-version` / `INPUT_OTP_VERSION`: Erlang/OTP のバージョン (例: `29.1.1`)
-- `--aws-lc-version` / `INPUT_AWS_LC_VERSION`: AWS-LC のバージョン (例: `v5.10.0`)
+- `--aws-lc-version` / `INPUT_AWS_LC_VERSION`: AWS-LC のバージョン (例: `v5.11.0`)
 - `--target` / `INPUT_OTP_TARGET`: ターゲットトリプル。通常は自動検出します
 - `--root` / `SETUP_ERLANG_ROOT`: インストール先
 - `--no-plt` / `INPUT_USE_PLT`: dialyzer のベース PLT をインストールしません
