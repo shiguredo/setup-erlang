@@ -342,6 +342,67 @@ jobs:
           printf '%s\n' "${output}"
           printf '%s\n' "${output}" | grep -q '^otp_version='
 
+      - name: Resolve the debug build separately from the release build
+        run: |
+          set -euo pipefail
+          work_dir="$(mktemp -d)"
+          manifest="${work_dir}/builds.tsv"
+          printf '# otp_version\taws_lc_version\ttarget\tasset\tsha256\tsource_ref\tplt_asset\tplt_sha256\tdebug\n' > "${manifest}"
+          printf '29.1.1\tv5.11.0\tx86_64-unknown-linux-gnu\totp-x86_64-unknown-linux-gnu.tar.gz\taaa\tshiguredo/otp@abc\totp-x86_64-unknown-linux-gnu.iplt\tbbb\n' >> "${manifest}"
+          printf '29.1.1\tv5.11.0\tx86_64-unknown-linux-gnu\totp-x86_64-unknown-linux-gnu-debug.tar.gz\tccc\tshiguredo/otp@abc\totp-x86_64-unknown-linux-gnu.iplt\tbbb\ttrue\n' >> "${manifest}"
+
+          resolve() {
+            env -u GITHUB_ACTIONS -u GITHUB_OUTPUT -u GITHUB_PATH \
+              HOME="${work_dir}/home" \
+              SETUP_ERLANG_MANIFEST="${manifest}" \
+              INPUT_OTP_VERSION=29.1.1 \
+              INPUT_AWS_LC_VERSION=v5.11.0 \
+              INPUT_OTP_TARGET=x86_64-unknown-linux-gnu \
+              "$@" \
+              bash scripts/install.sh resolve
+          }
+
+          release_output="$(resolve)"
+          printf '%s\n' "${release_output}"
+          [[ "$(printf '%s\n' "${release_output}" | sed -n 's/^debug=//p')" == "false" ]]
+          [[ "$(printf '%s\n' "${release_output}" | sed -n 's/^install_root=//p')" == "${work_dir}/home/.local/share/setup-erlang/29.1.1-aws-lc-v5.11.0" ]]
+
+          debug_output="$(INPUT_DEBUG=true resolve)"
+          printf '%s\n' "${debug_output}"
+          [[ "$(printf '%s\n' "${debug_output}" | sed -n 's/^debug=//p')" == "true" ]]
+          [[ "$(printf '%s\n' "${debug_output}" | sed -n 's/^install_root=//p')" == "${work_dir}/home/.local/share/setup-erlang/29.1.1-aws-lc-v5.11.0-debug" ]]
+          [[ "$(printf '%s\n' "${debug_output}" | sed -n 's/^plt_path=//p')" == "${work_dir}/home/.local/share/setup-erlang/29.1.1-aws-lc-v5.11.0-debug/plt/rebar3_29.1.1_iplt" ]]
+
+          if INPUT_DEBUG=true \
+            env -u GITHUB_ACTIONS -u GITHUB_OUTPUT -u GITHUB_PATH \
+              HOME="${work_dir}/home" \
+              SETUP_ERLANG_MANIFEST="${manifest}" \
+              INPUT_OTP_VERSION=29.1.1 \
+              INPUT_AWS_LC_VERSION=v5.9.0 \
+              INPUT_OTP_TARGET=x86_64-unknown-linux-gnu \
+              bash scripts/install.sh resolve >/dev/null 2>&1; then
+            echo "debug resolve must fail when that AWS-LC version has no debug row"
+            exit 1
+          fi
+
+          root="${work_dir}/root"
+          mkdir -p "${root}/29.1.1-aws-lc-v5.11.0" "${root}/29.1.1-aws-lc-v5.11.0-debug"
+          bash scripts/install.sh use --root "${root}" 29.1.1 v5.11.0
+          [[ "$(readlink "${root}/current")" == "29.1.1-aws-lc-v5.11.0" ]]
+          bash scripts/install.sh use --root "${root}" --debug 29.1.1 v5.11.0
+          [[ "$(readlink "${root}/current")" == "29.1.1-aws-lc-v5.11.0-debug" ]]
+
+          bash scripts/install.sh list --root "${root}" > "${work_dir}/list-installed.log"
+          list_output="$(
+            env -u GITHUB_ACTIONS -u GITHUB_OUTPUT -u GITHUB_PATH \
+              HOME="${work_dir}/home" \
+              SETUP_ERLANG_MANIFEST="${manifest}" \
+              bash scripts/install.sh list --root "${root}" --target x86_64-unknown-linux-gnu
+          )"
+          printf '%s\n' "${list_output}"
+          printf '%s\n' "${list_output}" | grep -Fq '29.1.1  v5.11.0'
+          printf '%s\n' "${list_output}" | grep -Fq '29.1.1 debug  v5.11.0'
+
   local-install:
     name: Local install (${{ matrix.runner }})
     needs: versions

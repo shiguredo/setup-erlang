@@ -18,6 +18,10 @@
 #   symlink を PATH に置くと動かない。必ず <base>/current のディレクトリ
 #   symlink を PATH に通すこと。
 #
+#   INPUT_DEBUG が "true" のときはデバッグ版を入れる。インストール先は
+#   <otp>-aws-lc-<aws-lc>-debug になる。デバッグ版のベース PLT は正式版と
+#   同じファイルを使う。
+#
 # マニフェスト (versions/builds.tsv) は、リポジトリ内で実行した場合はその
 # チェックアウトのものを使い、それ以外は GitHub からダウンロードして
 # ${XDG_CACHE_HOME:-$HOME/.cache}/setup-erlang/manifest.tsv にキャッシュする。
@@ -74,6 +78,7 @@ Options:
   --target TARGET           Target triple override (example: aarch64-apple-darwin)
   --root DIR                Install root (default: ${XDG_DATA_HOME:-$HOME/.local/share}/setup-erlang)
   --no-plt                  Do not install the dialyzer base PLT
+  --debug                   Install the debug build (lock counter, frame pointers, extra microstate accounting, dynamic trace)
   -h, --help                Show this help
 
 Environment:
@@ -81,6 +86,7 @@ Environment:
   INPUT_AWS_LC_VERSION      Same as --aws-lc-version
   INPUT_OTP_TARGET          Same as --target
   INPUT_USE_PLT             "false" disables the base PLT
+  INPUT_DEBUG               "true" installs the debug build
   SETUP_ERLANG_ROOT         Same as --root
   SETUP_ERLANG_MANIFEST     Manifest file to use instead of the built-in one
   SETUP_ERLANG_MANIFEST_URL Manifest URL (default: raw.githubusercontent.com)
@@ -203,6 +209,7 @@ emit_outputs() {
     set_output aws_lc_version "${AWS_LC_VERSION_RESOLVED}"
     set_output install_root "${INSTALL_ROOT}"
     set_output plt_path "${PLT_PATH}"
+    set_output debug "$(debug_wanted)"
 }
 
 detect_target() {
@@ -258,9 +265,33 @@ manifest_rows() {
     grep -v -E '^[[:space:]]*(#|$)' "${file}" || true
 }
 
+# マニフェストの debug 列が true の行だけをデバッグ版として扱う。列が無い行は正式版
+debug_wanted() {
+    if [[ "${INPUT_DEBUG:-false}" == "true" ]]; then
+        printf 'true\n'
+    else
+        printf 'false\n'
+    fi
+}
+
+version_dir_name() {
+    local otp_version="$1"
+    local aws_lc_version="$2"
+    local name="${otp_version}-aws-lc-${aws_lc_version}"
+    if [[ "$(debug_wanted)" == "true" ]]; then
+        name="${name}-debug"
+    fi
+    printf '%s\n' "${name}"
+}
+
 available_otp_versions() {
     local file="$1"
-    manifest_rows "${file}" | awk -F'\t' 'NF >= 6 { print $1 }' | sort -u | tr '\n' ' '
+    manifest_rows "${file}" |
+        awk -F'\t' -v want_debug="$(debug_wanted)" '
+            function row_debug() { return (NF >= 9 && $9 == "true") ? "true" : "false" }
+            NF >= 6 && row_debug() == want_debug { print $1 }
+        ' |
+        sort -u | tr '\n' ' '
 }
 
 available_aws_lc_versions() {
@@ -268,8 +299,10 @@ available_aws_lc_versions() {
     local otp_version="$2"
     local target="${3:-}"
     manifest_rows "${file}" |
-        awk -F'\t' -v otp="${otp_version}" -v target="${target}" \
-            'NF >= 6 && $1 == otp && (target == "" || $3 == target) { print $2 }' |
+        awk -F'\t' -v otp="${otp_version}" -v target="${target}" -v want_debug="$(debug_wanted)" '
+            function row_debug() { return (NF >= 9 && $9 == "true") ? "true" : "false" }
+            NF >= 6 && $1 == otp && (target == "" || $3 == target) && row_debug() == want_debug { print $2 }
+        ' |
         sort -u | tr '\n' ' '
 }
 
@@ -278,8 +311,10 @@ available_targets() {
     local otp_version="$2"
     local aws_lc_version="$3"
     manifest_rows "${file}" |
-        awk -F'\t' -v otp="${otp_version}" -v aws_lc="${aws_lc_version}" \
-            'NF >= 6 && $1 == otp && $2 == aws_lc { print $3 }' |
+        awk -F'\t' -v otp="${otp_version}" -v aws_lc="${aws_lc_version}" -v want_debug="$(debug_wanted)" '
+            function row_debug() { return (NF >= 9 && $9 == "true") ? "true" : "false" }
+            NF >= 6 && $1 == otp && $2 == aws_lc && row_debug() == want_debug { print $3 }
+        ' |
         sort -u | tr '\n' ' '
 }
 
@@ -290,8 +325,9 @@ select_otp_version() {
     local requested="$3"
     if [[ "${requested}" == "latest" ]]; then
         manifest_rows "${file}" |
-            awk -F'\t' -v target="${target}" '
-                NF >= 6 && $3 == target {
+            awk -F'\t' -v target="${target}" -v want_debug="$(debug_wanted)" '
+                function row_debug() { return (NF >= 9 && $9 == "true") ? "true" : "false" }
+                NF >= 6 && $3 == target && row_debug() == want_debug {
                     found = $1
                 }
                 END {
@@ -300,8 +336,9 @@ select_otp_version() {
         return
     fi
     manifest_rows "${file}" |
-        awk -F'\t' -v req="${requested}" '
-            NF >= 6 && $1 == req {
+        awk -F'\t' -v req="${requested}" -v want_debug="$(debug_wanted)" '
+            function row_debug() { return (NF >= 9 && $9 == "true") ? "true" : "false" }
+            NF >= 6 && $1 == req && row_debug() == want_debug {
                 found = $1
             }
             END {
@@ -317,8 +354,9 @@ select_aws_lc_version() {
     local requested="$4"
     if [[ -z "${requested}" || "${requested}" == "latest" ]]; then
         manifest_rows "${file}" |
-            awk -F'\t' -v otp="${otp_version}" -v target="${target}" '
-                NF >= 6 && $1 == otp && $3 == target {
+            awk -F'\t' -v otp="${otp_version}" -v target="${target}" -v want_debug="$(debug_wanted)" '
+                function row_debug() { return (NF >= 9 && $9 == "true") ? "true" : "false" }
+                NF >= 6 && $1 == otp && $3 == target && row_debug() == want_debug {
                     found = $2
                 }
                 END {
@@ -327,8 +365,9 @@ select_aws_lc_version() {
         return
     fi
     manifest_rows "${file}" |
-        awk -F'\t' -v otp="${otp_version}" -v target="${target}" -v req="${requested}" '
-            NF >= 6 && $1 == otp && $3 == target &&
+        awk -F'\t' -v otp="${otp_version}" -v target="${target}" -v req="${requested}" -v want_debug="$(debug_wanted)" '
+            function row_debug() { return (NF >= 9 && $9 == "true") ? "true" : "false" }
+            NF >= 6 && $1 == otp && $3 == target && row_debug() == want_debug &&
                 (req == "" || $2 == req || $2 == "v" req || substr($2, 2) == req) {
                 found = $2
             }
@@ -346,7 +385,10 @@ select_row() {
     rows="$(
         manifest_rows "${file}" |
             awk -F'\t' -v otp="${otp_version}" -v aws_lc="${aws_lc_version}" -v target="${target}" \
-                'NF >= 6 && $1 == otp && $2 == aws_lc && $3 == target'
+                -v want_debug="$(debug_wanted)" '
+                function row_debug() { return (NF >= 9 && $9 == "true") ? "true" : "false" }
+                NF >= 6 && $1 == otp && $2 == aws_lc && $3 == target && row_debug() == want_debug
+            '
     )"
     [[ "$(printf '%s\n' "${rows}" | grep -c .)" == "1" ]] || return 1
     printf '%s\n' "${rows}"
@@ -370,7 +412,7 @@ install_base() {
 install_root_for() {
     local otp_version="$1"
     local aws_lc_version="$2"
-    printf '%s\n' "$(install_base)/${otp_version}-aws-lc-${aws_lc_version}"
+    printf '%s\n' "$(install_base)/$(version_dir_name "${otp_version}" "${aws_lc_version}")"
 }
 
 current_link() {
@@ -600,7 +642,7 @@ update_current_link() {
     local base
     local target
     base="$(install_base)"
-    target="${OTP_VERSION_RESOLVED}-aws-lc-${AWS_LC_VERSION_RESOLVED}"
+    target="$(version_dir_name "${OTP_VERSION_RESOLVED}" "${AWS_LC_VERSION_RESOLVED}")"
     mkdir -p "${base}"
     ln -sfn "${target}" "${base}/current"
     printf 'setup-erlang: %s -> %s\n' "${base}/current" "${target}"
@@ -677,15 +719,20 @@ list_command() {
     printf 'setup-erlang: available for %s\n' "${TARGET}"
     manifest_rows "${manifest}" |
         awk -F'\t' -v target="${TARGET}" '
+            function row_debug() { return (NF >= 9 && $9 == "true") ? "true" : "false" }
             NF >= 6 && $3 == target {
-                if (!($1 in seen)) {
-                    seen[$1] = 1
-                    order[++count] = $1
+                label = $1
+                if (row_debug() == "true") {
+                    label = $1 " debug"
                 }
-                key = $1 SUBSEP $2
+                if (!(label in seen)) {
+                    seen[label] = 1
+                    order[++count] = label
+                }
+                key = label SUBSEP $2
                 if (!(key in pair)) {
                     pair[key] = 1
-                    versions[$1] = versions[$1] " " $2
+                    versions[label] = versions[label] " " $2
                 }
             }
             END {
@@ -705,9 +752,13 @@ use_command() {
     local base
     base="$(install_base)"
     local candidate=""
+    local suffix=""
+    if [[ "$(debug_wanted)" == "true" ]]; then
+        suffix="-debug"
+    fi
     if [[ -n "${USE_AWS_LC_VERSION}" ]]; then
         local name
-        for name in "${USE_VERSION}-aws-lc-${USE_AWS_LC_VERSION}" "${USE_VERSION}-aws-lc-v${USE_AWS_LC_VERSION}"; do
+        for name in "${USE_VERSION}-aws-lc-${USE_AWS_LC_VERSION}${suffix}" "${USE_VERSION}-aws-lc-v${USE_AWS_LC_VERSION}${suffix}"; do
             if [[ -d "${base}/${name}" ]]; then
                 candidate="${name}"
                 break
@@ -716,9 +767,19 @@ use_command() {
     else
         local matches=()
         local dir
+        local name
         for dir in "${base}/${USE_VERSION}-aws-lc-"*; do
             [[ -d "${dir}" && ! -L "${dir}" ]] || continue
-            matches+=("$(basename "${dir}")")
+            name="$(basename "${dir}")"
+            case "${name}" in
+                *-debug)
+                    [[ "${suffix}" == "-debug" ]] || continue
+                    ;;
+                *)
+                    [[ "${suffix}" == "" ]] || continue
+                    ;;
+            esac
+            matches+=("${name}")
         done
         if (( ${#matches[@]} == 1 )); then
             candidate="${matches[0]}"
@@ -819,6 +880,10 @@ parse_args() {
                 ;;
             --no-plt)
                 INPUT_USE_PLT=false
+                shift
+                ;;
+            --debug)
+                INPUT_DEBUG=true
                 shift
                 ;;
             --)

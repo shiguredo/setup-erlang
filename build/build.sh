@@ -2,9 +2,14 @@
 #
 # Build Erlang/OTP with AWS-LC on Linux and macOS runners.
 #
-# The AWS-LC build steps and the Erlang/OTP configure options are the same as
-# shiguredo/docker-erlang-otp so that the resulting binaries have the same
-# applications and features as the container images.
+# The release build (DEBUG=false) uses the same AWS-LC build steps and
+# Erlang/OTP configure options as shiguredo/docker-erlang-otp.
+#
+# The debug build (DEBUG=true) keeps those options and adds lock counting,
+# extra microstate accounting, and dynamic trace probes. shiguredo/otp adds
+# the lcnt emulator to the release when --enable-lock-counter is set. The
+# frame-pointer emulator is not one of the default types, so it is built with
+# a second release of erts/emulator (TYPE=frmptr) into the same tree.
 #
 # Erlang/OTP is packaged as a release (make release) instead of an installation
 # (make install). The installation layout puts erts under lib/erlang, where the
@@ -20,6 +25,9 @@ set -euo pipefail
 : "${OTP_VERSION:?OTP_VERSION is required (example: 29.1.1)}"
 : "${AWS_LC_VERSION:?AWS_LC_VERSION is required (example: v5.11.0)}"
 : "${TARGET:?TARGET is required (example: x86_64-unknown-linux-gnu)}"
+
+# true のときデバッグ版を作る。それ以外は正式版
+DEBUG="${DEBUG:-false}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
@@ -69,6 +77,30 @@ sha256_of() {
     else
         die 'sha256sum or shasum is required'
     fi
+}
+
+dynamic_trace_framework() {
+    case "${PLATFORM}" in
+        Linux)
+            printf 'systemtap\n'
+            ;;
+        Darwin)
+            printf 'dtrace\n'
+            ;;
+        *)
+            die "unsupported platform: ${PLATFORM}"
+            ;;
+    esac
+}
+
+# systemtap も dtrace も、configure が dtrace コマンドでプローブを生成する
+require_dtrace() {
+    [[ "${DEBUG}" == "true" ]] || return 0
+    if [[ "${PLATFORM}" == "Darwin" && ! -x "$(command -v dtrace || true)" && -x /usr/sbin/dtrace ]]; then
+        export PATH="/usr/sbin:${PATH}"
+    fi
+    command -v dtrace >/dev/null 2>&1 ||
+        die "dtrace is required to build the debug variant ($(dynamic_trace_framework))"
 }
 
 require_commands() {
@@ -124,33 +156,48 @@ build_otp() {
         MAKEFLAGS="-j$(job_count)"
         export MAKEFLAGS
         export RELEASE_ROOT="${RELEASE_DIR}"
-        ./configure \
-            --enable-kernel-poll \
-            --enable-dirty-schedulers \
-            --enable-jit \
-            --disable-sharing-preserving \
-            --disable-sctp \
-            --disable-dynamic-ssl-lib \
-            --with-ssl="${AWS_LC_INSTALL_DIR}" \
-            --with-ssl-rpath=no \
-            --without-javac \
-            --without-odbc \
-            --without-wx \
-            --without-debugger \
-            --without-observer \
-            --without-crashdump_viewer \
-            --without-et \
-            --without-tftp \
-            --without-ftp \
-            --without-megaco \
-            --without-eldap \
-            --without-diameter \
-            --without-jinterface \
-            --without-mnesia \
-            --without-snmp \
-            --without-erl_docgen \
+        configure_flags=(
+            --enable-kernel-poll
+            --enable-dirty-schedulers
+            --enable-jit
+            --disable-sharing-preserving
+            --disable-sctp
+            --disable-dynamic-ssl-lib
+            --with-ssl="${AWS_LC_INSTALL_DIR}"
+            --with-ssl-rpath=no
+            --without-javac
+            --without-odbc
+            --without-wx
+            --without-debugger
+            --without-observer
+            --without-crashdump_viewer
+            --without-et
+            --without-tftp
+            --without-ftp
+            --without-megaco
+            --without-eldap
+            --without-diameter
+            --without-jinterface
+            --without-mnesia
+            --without-snmp
+            --without-erl_docgen
             --without-ssh
+        )
+        if [[ "${DEBUG}" == "true" ]]; then
+            # --enable-lock-counter は DEFAULT_TYPES に lcnt を足すので、
+            # このあとの make release が beam.smp と beam.lcnt.smp を両方入れる
+            configure_flags+=(
+                --enable-lock-counter
+                --with-microstate-accounting=extra
+                --with-dynamic-trace="$(dynamic_trace_framework)"
+            )
+        fi
+        ./configure "${configure_flags[@]}"
         make release
+        if [[ "${DEBUG}" == "true" ]]; then
+            # frmptr は DEFAULT_TYPES に含まれない。同じ RELEASE_ROOT へ追加する
+            make -C erts/emulator TYPE=frmptr TESTROOT="${RELEASE_DIR}" release
+        fi
         cd "${RELEASE_DIR}"
         ./Install -sasl "${PWD}"
         rm -f Install
@@ -211,6 +258,99 @@ verify_release() {
             ;;
     esac
     printf 'build-erlang: verified crypto backend %s at %s\n' "${version_string}" "${root_dir}"
+    verify_variant "${expected_root}"
+}
+
+emulator_path() {
+    find "$1" -name "$2" -print -quit
+}
+
+# emu_type が空のときは通常の beam.smp を起動する
+run_erl_eval() {
+    local root="$1"
+    local emu_type="$2"
+    local eval="$3"
+    if [[ -n "${emu_type}" ]]; then
+        "${root}/bin/erl" -emu_type "${emu_type}" -noshell -eval "${eval}"
+    else
+        "${root}/bin/erl" -noshell -eval "${eval}"
+    fi
+}
+
+expected_dynamic_trace() {
+    if [[ "${DEBUG}" == "true" ]]; then
+        dynamic_trace_framework
+    else
+        printf 'none\n'
+    fi
+}
+
+check_build_type() {
+    local root="$1"
+    local emu_type="$2"
+    local expected_build="$3"
+    local output
+    if ! output="$(
+        EXPECT_TRACE="$(expected_dynamic_trace)" \
+            run_erl_eval "${root}" "${emu_type}" '
+                Trace = erlang:system_info(dynamic_trace),
+                ExpectedTrace = list_to_atom(os:getenv("EXPECT_TRACE")),
+                io:format("~p ~p~n", [erlang:system_info(build_type), Trace]),
+                case Trace of
+                    ExpectedTrace -> halt(0);
+                    _ -> halt(1)
+                end.' 2>&1
+    )"; then
+        die "emulator check failed for ${expected_build}: ${output}"
+    fi
+    local build_type
+    build_type="$(printf '%s\n' "${output}" | awk 'NF { build = $1 } END { print build }')"
+    [[ "${build_type}" == "${expected_build}" ]] ||
+        die "expected build_type ${expected_build}, got: ${output}"
+    printf 'build-erlang: verified build_type %s dynamic_trace %s\n' \
+        "${expected_build}" "$(expected_dynamic_trace)"
+}
+
+verify_variant() {
+    local root="$1"
+    local output
+    if ! output="$(
+        run_erl_eval "${root}" "" '
+            {error, bad_name} = code:lib_dir(wx),
+            {error, bad_name} = code:lib_dir(observer),
+            {error, bad_name} = code:lib_dir(debugger),
+            {error, bad_name} = code:lib_dir(et),
+            halt(0).' 2>&1
+    )"; then
+        die "wx applications are present in the release: ${output}"
+    fi
+
+    local lcnt_bin
+    local frmptr_bin
+    lcnt_bin="$(emulator_path "${root}" 'beam.lcnt.smp')"
+    frmptr_bin="$(emulator_path "${root}" 'beam.frmptr.smp')"
+    if [[ "${DEBUG}" == "true" ]]; then
+        [[ -n "${lcnt_bin}" ]] || die 'beam.lcnt.smp is missing from the debug build'
+        [[ -n "${frmptr_bin}" ]] || die 'beam.frmptr.smp is missing from the debug build'
+        check_build_type "${root}" "" opt
+        check_build_type "${root}" lcnt lcnt
+        check_build_type "${root}" frmptr frmptr
+        if ! output="$(
+            run_erl_eval "${root}" "" '
+                erlang:system_flag(microstate_accounting, true),
+                [#{counters := Counters} | _] = erlang:statistics(microstate_accounting),
+                true = maps:is_key(alloc, Counters),
+                true = maps:is_key(bif, Counters),
+                halt(0).' 2>&1
+        )"; then
+            die "extra microstate accounting is missing: ${output}"
+        fi
+        printf 'build-erlang: verified extra microstate accounting\n'
+    else
+        [[ -z "${lcnt_bin}" ]] || die "release build contains ${lcnt_bin}"
+        [[ -z "${frmptr_bin}" ]] || die "release build contains ${frmptr_bin}"
+        check_build_type "${root}" "" opt
+    fi
 }
 
 package_release() {
@@ -240,11 +380,16 @@ package_plt() {
 }
 
 main() {
+    case "${DEBUG}" in
+        true | false) ;;
+        *) die "DEBUG must be true or false (got ${DEBUG})" ;;
+    esac
     if [[ "${PLATFORM}" == 'Darwin' ]]; then
         [[ "$(uname -m)" == 'arm64' ]] || die "macOS builds require an arm64 host, got $(uname -m)"
         export COPYFILE_DISABLE=1
     fi
     require_commands
+    require_dtrace
     mkdir -p "${WORK_DIR}" "${OUTPUT_DIR}"
     WORK_DIR="$(cd "${WORK_DIR}" && pwd -P)"
     OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd -P)"
@@ -253,15 +398,21 @@ main() {
     AWS_LC_INSTALL_DIR="${WORK_DIR}/aws-lc-install"
     OTP_SOURCE_DIR="${WORK_DIR}/otp"
     RELEASE_DIR="${WORK_DIR}/erlang"
-    ASSET_NAME="otp-${TARGET}.tar.gz"
+    if [[ "${DEBUG}" == "true" ]]; then
+        ASSET_NAME="otp-${TARGET}-debug.tar.gz"
+    else
+        ASSET_NAME="otp-${TARGET}.tar.gz"
+    fi
     PLT_NAME="otp-${TARGET}.iplt"
 
-    printf 'build-erlang: Erlang/OTP %s with AWS-LC %s for %s on %s\n' \
-        "${OTP_VERSION}" "${AWS_LC_VERSION}" "${TARGET}" "${PLATFORM}"
+    printf 'build-erlang: Erlang/OTP %s with AWS-LC %s for %s on %s (debug %s)\n' \
+        "${OTP_VERSION}" "${AWS_LC_VERSION}" "${TARGET}" "${PLATFORM}" "${DEBUG}"
     build_aws_lc
     build_otp
     package_release
-    package_plt
+    if [[ "${DEBUG}" == "false" ]]; then
+        package_plt
+    fi
 }
 
 main "$@"

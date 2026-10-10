@@ -37,6 +37,14 @@ inputs:
       skip the download
     required: false
     default: "true"
+  debug:
+    description: >
+      Install the debug build when "true". The debug build adds the
+      lock-counting emulator, the frame-pointer emulator, extra microstate
+      accounting, and dynamic tracing (systemtap on Linux, dtrace on macOS).
+      Any other value installs the release build
+    required: false
+    default: "false"
 
 outputs:
   otp-version:
@@ -53,6 +61,9 @@ outputs:
       The path of the dialyzer base PLT. The file exists when use-plt is
       enabled
     value: ${{ steps.install.outputs.plt_path }}
+  debug:
+    description: '"true" when the debug build was installed'
+    value: ${{ steps.install.outputs.debug }}
 
 runs:
   using: composite
@@ -65,6 +76,7 @@ runs:
         INPUT_AWS_LC_VERSION: ${{ inputs.aws-lc-version }}
         INPUT_OTP_TARGET: ${{ inputs.otp-target }}
         INPUT_USE_PLT: ${{ inputs.use-plt }}
+        INPUT_DEBUG: ${{ inputs.debug == 'true' && 'true' || 'false' }}
       run: bash "${GITHUB_ACTION_PATH}/scripts/install.sh" resolve
 
     - name: Restore Erlang/OTP cache
@@ -72,7 +84,7 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.resolve.outputs.install_root }}
-        key: setup-erlang-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.otp_version }}-${{ steps.resolve.outputs.aws_lc_version }}
+        key: setup-erlang-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve.outputs.otp_version }}-${{ steps.resolve.outputs.aws_lc_version }}${{ steps.resolve.outputs.debug == 'true' && '-debug' || '' }}
 
     - name: Install Erlang/OTP
       id: install
@@ -82,4 +94,5 @@ runs:
         INPUT_AWS_LC_VERSION: ${{ inputs.aws-lc-version }}
         INPUT_OTP_TARGET: ${{ inputs.otp-target }}
         INPUT_USE_PLT: ${{ inputs.use-plt }}
+        INPUT_DEBUG: ${{ inputs.debug == 'true' && 'true' || 'false' }}
       run: bash "${GITHUB_ACTION_PATH}/scripts/install.sh" install

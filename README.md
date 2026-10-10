@@ -17,6 +17,22 @@ AWS-LC を静的リンクしたビルド済み Erlang/OTP をインストール�
 
 - `otp-version` は完全一致で指定します (例: `29.1.1`)
 - `aws-lc-version` は省略できます。省略時はその Erlang/OTP で利用できる最新の AWS-LC を使います
+- `debug` は文字列です。`"true"` のときだけデバッグ版を入れます。省略時とそれ以外の値は正式版です
+
+デバッグ版を入れるときは `debug` を足します。
+
+```yaml
+- uses: shiguredo/setup-erlang@main
+  with:
+    otp-version: "29.1.1"
+    aws-lc-version: "v5.11.0"
+    debug: "true"
+```
+
+- デバッグ版のアセット名は `otp-<target>-debug.tar.gz` です。GitHub Release のタグは正式版と同じ `otp-<otp-version>-aws-lc-<aws-lc-version>` です
+- インストール先のディレクトリ名の末尾は `-debug` です
+- dialyzer のベース PLT は正式版のものを使います。デバッグ版だけの PLT はありません
+- Linux のデバッグ版は systemtap、macOS のデバッグ版は dtrace のプローブを含みます。`stap` や `dtrace` コマンド自体は入れません
 
 ### キャッシュと dialyzer のベース PLT
 
@@ -46,6 +62,7 @@ AWS-LC を静的リンクしたビルド済み Erlang/OTP をインストール�
 - `aws-lc-version`: インストールした AWS-LC のバージョン
 - `erlang-root-dir`: Erlang/OTP のインストールディレクトリ
 - `plt-path`: dialyzer のベース PLT のパス (`use-plt` が有効な場合のみファイルが存在します)
+- `debug`: デバッグ版を入れたとき `"true"`
 
 ## Ubuntu / macOS で使う
 
@@ -64,6 +81,9 @@ $ curl -fsSL https://raw.githubusercontent.com/shiguredo/setup-erlang/main/scrip
 
 # AWS-LC も指定してインストールする
 $ curl -fsSL https://raw.githubusercontent.com/shiguredo/setup-erlang/main/scripts/install.sh | bash -s -- 29.1.1 v5.11.0
+
+# デバッグ版をインストールする
+$ curl -fsSL https://raw.githubusercontent.com/shiguredo/setup-erlang/main/scripts/install.sh | bash -s -- --debug 29.1.1 v5.11.0
 ```
 
 インストールの最後に表示される `export PATH` をシェルの設定ファイルに追加すると `erl` が使えるようになります。
@@ -101,6 +121,7 @@ $ bash setup-erlang.sh use 29.1.1 v5.11.0
 - `--target` / `INPUT_OTP_TARGET`: ターゲットトリプル。通常は自動検出します
 - `--root` / `SETUP_ERLANG_ROOT`: インストール先
 - `--no-plt` / `INPUT_USE_PLT`: dialyzer のベース PLT をインストールしません
+- `--debug` / `INPUT_DEBUG`: `"true"` のときデバッグ版をインストールします。`use` と `list` でも同じ指定でデバッグ版を選びます
 - `SETUP_ERLANG_MANIFEST`: マニフェストファイルを直接指定します
 - `SETUP_ERLANG_MANIFEST_URL`: マニフェストの URL を指定します (既定は `raw.githubusercontent.com/shiguredo/setup-erlang/main/versions/builds.tsv`)
 - `SETUP_ERLANG_MANIFEST_REF`: マニフェストを取得する ref を指定します (既定は `main`)
@@ -118,11 +139,60 @@ $ bash setup-erlang.sh use 29.1.1 v5.11.0
 
 ビルド済みバイナリは glibc 2.38 以降が必要です。Ubuntu 22.04 以前では動作しません。macOS の x86_64 には対応していません。
 
+## ビルドオプション
+
+正式版とデバッグ版は、同じ [shiguredo/otp](https://github.com/shiguredo/otp) の `aws-lc-OTP-*` タグから作ります。アプリケーション構成は同じです。`wx` を使う `observer`、`debugger`、`et` はどちらにも入れません。
+
+正式版の configure は [docker-erlang-otp](https://github.com/shiguredo/docker-erlang-otp) と同じです。
+
+```text
+--enable-kernel-poll
+--enable-dirty-schedulers
+--enable-jit
+--disable-sharing-preserving
+--disable-sctp
+--disable-dynamic-ssl-lib
+--with-ssl=<AWS-LC のインストール先>
+--with-ssl-rpath=no
+--without-javac
+--without-odbc
+--without-wx
+--without-debugger
+--without-observer
+--without-crashdump_viewer
+--without-et
+--without-tftp
+--without-ftp
+--without-megaco
+--without-eldap
+--without-diameter
+--without-jinterface
+--without-mnesia
+--without-snmp
+--without-erl_docgen
+--without-ssh
+```
+
+デバッグ版は、このあとに次を足します。
+
+```text
+--enable-lock-counter
+--with-microstate-accounting=extra
+--with-dynamic-trace=systemtap
+--with-dynamic-trace=dtrace
+```
+
+- `--with-dynamic-trace=systemtap` は Linux、`--with-dynamic-trace=dtrace` は macOS です
+- `--enable-lock-counter` を付けると、`make release` が通常の `beam.smp` に加えて `beam.lcnt.smp` を入れます。起動は `erl -emu_type lcnt` です
+- フレームポインタ付きの `beam.frmptr.smp` は configure では選ばれないので、同じリリースツリーに対して `make -C erts/emulator TYPE=frmptr release` で追加します。起動は `erl -emu_type frmptr` です
+- デバッグ版に入るエミュレータは、通常の `beam.smp`、`beam.lcnt.smp`、`beam.frmptr.smp` です。通常の `erl` は最適化された `beam.smp` のままです。`--with-microstate-accounting=extra` と dynamic trace の計測点は、この `beam.smp` に入ります
+- JIT 向けの `+JPperf` はビルドオプションではありません。正式版でもデバッグ版でも、実行時に指定します
+
 ## AWS-LC パッチ
 
 - [AWS-LC](https://github.com/aws/aws-lc) を静的リンクした Erlang/OTP を提供しています
 - [shiguredo/otp](https://github.com/shiguredo/otp) の `aws-lc-OTP-*` タグからビルドしています
-- ビルドオプションは [docker-erlang-otp](https://github.com/shiguredo/docker-erlang-otp) と同じです
+- 正式版のビルドオプションは [docker-erlang-otp](https://github.com/shiguredo/docker-erlang-otp) と同じです。デバッグ版の追加分は「ビルドオプション」にあります
 
 ## 管理ポリシー
 

@@ -29,11 +29,29 @@ on:
         required: false
         default: false
         type: boolean
+      debug:
+        description: >
+          Build the debug variant and publish otp-<target>-debug.tar.gz to the
+          same GitHub Release as the release build. The release build must
+          already be in versions/builds.tsv. Cannot be combined with plt_only
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 jobs:
+  reject:
+    name: Reject debug with plt_only
+    if: ${{ inputs.debug && inputs.plt_only }}
+    runs-on: ubuntu-slim
+    steps:
+      - name: Fail
+        run: |
+          echo "debug and plt_only cannot be combined. The debug build reuses the release base PLT." >&2
+          exit 1
+
   build:
     name: Build ${{ matrix.target }}
     if: ${{ !inputs.plt_only }}
@@ -54,17 +72,25 @@ jobs:
 
       - name: Install build dependencies (Linux)
         if: runner.os == 'Linux'
+        env:
+          DEBUG: ${{ inputs.debug && 'true' || 'false' }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            autoconf \
-            build-essential \
-            cmake \
-            curl \
-            git \
-            golang \
-            libncurses-dev \
+          packages=(
+            autoconf
+            build-essential
+            cmake
+            curl
+            git
+            golang
+            libncurses-dev
             ninja-build
+          )
+          # systemtap-sdt-dev が dtrace 互換コマンドと sys/sdt.h を提供する
+          if [[ "${DEBUG}" == "true" ]]; then
+            packages+=(systemtap-sdt-dev)
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
 
       - name: Install build dependencies (macOS)
         if: runner.os == 'macOS'
@@ -79,12 +105,32 @@ jobs:
             brew install "${missing[@]}"
           fi
 
+      - name: Require the release build
+        if: inputs.debug
+        env:
+          OTP_VERSION: ${{ inputs.otp_version }}
+          AWS_LC_VERSION: ${{ inputs.aws_lc_version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if ! awk -F'\t' -v otp="${OTP_VERSION}" -v aws_lc="${AWS_LC_VERSION}" -v target="${TARGET}" '
+            function row_debug() { return (NF >= 9 && $9 == "true") ? "true" : "false" }
+            NF >= 8 && $1 == otp && $2 == aws_lc && $3 == target && row_debug() == "false" && $7 != "" {
+              found = 1
+            }
+            END { exit !found }
+          ' versions/builds.tsv; then
+            echo "no release PLT for Erlang/OTP ${OTP_VERSION} AWS-LC ${AWS_LC_VERSION} ${TARGET}; publish the release build first" >&2
+            exit 1
+          fi
+
       - name: Build Erlang/OTP with AWS-LC
         env:
           OTP_VERSION: ${{ inputs.otp_version }}
           AWS_LC_VERSION: ${{ inputs.aws_lc_version }}
           SOURCE_REPOSITORY: ${{ inputs.source_repository }}
           TARGET: ${{ matrix.target }}
+          DEBUG: ${{ inputs.debug && 'true' || 'false' }}
           WORK_DIR: ${{ runner.temp }}/setup-erlang-work
           OUTPUT_DIR: ${{ runner.temp }}/setup-erlang-out
         run: ./build/build.sh
@@ -99,7 +145,7 @@ jobs:
 
   plt:
     name: Build base PLT ${{ matrix.target }}
-    if: ${{ inputs.plt_only }}
+    if: ${{ inputs.plt_only && !inputs.debug }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -179,18 +225,56 @@ jobs:
           OTP_VERSION: ${{ inputs.otp_version }}
           AWS_LC_VERSION: ${{ inputs.aws_lc_version }}
           PLT_ONLY: ${{ inputs.plt_only }}
+          DEBUG: ${{ inputs.debug && 'true' || 'false' }}
         run: |
+          set -euo pipefail
           release_tag="otp-${OTP_VERSION}-aws-lc-${AWS_LC_VERSION}"
           cd artifacts
-          sha256sum otp-*.tar.gz otp-*.iplt > SHA256SUMS
-          if [[ "${PLT_ONLY}" == "true" ]]; then
-            gh release upload "${release_tag}" otp-*.iplt SHA256SUMS --clobber
-          elif gh release view "${release_tag}" >/dev/null 2>&1; then
-            gh release upload "${release_tag}" otp-*.tar.gz otp-*.iplt SHA256SUMS --clobber
+          files=()
+          if [[ "${DEBUG}" == "true" ]]; then
+            for f in otp-*-debug.tar.gz; do
+              [[ -f "${f}" ]] || continue
+              files+=("${f}")
+            done
           else
-            gh release create "${release_tag}" otp-*.tar.gz otp-*.iplt SHA256SUMS \
+            for f in otp-*.tar.gz otp-*.iplt; do
+              [[ -f "${f}" ]] || continue
+              [[ "${f}" == *-debug.tar.gz ]] && continue
+              files+=("${f}")
+            done
+          fi
+          if (( ${#files[@]} == 0 )); then
+            echo "no assets to publish" >&2
+            exit 1
+          fi
+          # update-manifest は今回のバリアントの行だけを読む。
+          # GitHub Release の SHA256SUMS は既存のもう一方のバリアントを残す
+          sha256sum "${files[@]}" > SHA256SUMS
+          upload_sums="$(mktemp)"
+          cp SHA256SUMS "${upload_sums}"
+          release_exists=false
+          if gh release view "${release_tag}" >/dev/null 2>&1; then
+            release_exists=true
+            previous="$(mktemp -d)"
+            if gh release download "${release_tag}" --pattern SHA256SUMS --dir "${previous}"; then
+              awk 'NR == FNR { replaced[$2] = 1; next } !($2 in replaced)' \
+                SHA256SUMS "${previous}/SHA256SUMS" > "${upload_sums}.kept"
+              cat "${upload_sums}.kept" SHA256SUMS > "${upload_sums}"
+            fi
+          elif [[ "${PLT_ONLY}" == "true" ]]; then
+            echo "release ${release_tag} does not exist" >&2
+            exit 1
+          fi
+          if [[ "${release_exists}" == "true" ]]; then
+            gh release upload "${release_tag}" "${files[@]}" "${upload_sums}#SHA256SUMS" --clobber
+          else
+            notes="Prebuilt Erlang/OTP ${OTP_VERSION} with AWS-LC ${AWS_LC_VERSION}."
+            if [[ "${DEBUG}" == "true" ]]; then
+              notes="${notes} Includes the debug build."
+            fi
+            gh release create "${release_tag}" "${files[@]}" "${upload_sums}#SHA256SUMS" \
               --title "Erlang/OTP ${OTP_VERSION} with AWS-LC ${AWS_LC_VERSION}" \
-              --notes "Prebuilt Erlang/OTP ${OTP_VERSION} with AWS-LC ${AWS_LC_VERSION}."
+              --notes "${notes}"
           fi
 
       - name: Update manifest
@@ -200,6 +284,7 @@ jobs:
           AWS_LC_VERSION: ${{ inputs.aws_lc_version }}
           SOURCE_REPOSITORY: ${{ inputs.source_repository }}
           PLT_ONLY: ${{ inputs.plt_only }}
+          DEBUG: ${{ inputs.debug && 'true' || 'false' }}
         run: |
           ./build/update-manifest.sh
 
@@ -209,6 +294,8 @@ jobs:
           else
             if [[ "${PLT_ONLY}" == "true" ]]; then
               message="Erlang/OTP ${OTP_VERSION} と AWS-LC ${AWS_LC_VERSION} のベース PLT を追加する"
+            elif [[ "${DEBUG}" == "true" ]]; then
+              message="Erlang/OTP ${OTP_VERSION} と AWS-LC ${AWS_LC_VERSION} のデバッグ版バイナリを追加する"
             else
               message="Erlang/OTP ${OTP_VERSION} と AWS-LC ${AWS_LC_VERSION} のバイナリを追加する"
             fi
