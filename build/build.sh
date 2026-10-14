@@ -195,8 +195,12 @@ build_otp() {
         ./configure "${configure_flags[@]}"
         make release
         if [[ "${DEBUG}" == "true" ]]; then
-            # frmptr は DEFAULT_TYPES に含まれない。同じ RELEASE_ROOT へ追加する
-            make -C erts/emulator TYPE=frmptr TESTROOT="${RELEASE_DIR}" release
+            # frmptr は DEFAULT_TYPES に含まれない。同じ RELEASE_ROOT へ追加する。
+            # build.sh の TARGET (例: x86_64-unknown-linux-gnu) は OTP が configure
+            # で作るビルド対象 (例: x86_64-pc-linux-gnu) と一致しないため、
+            # 環境変数から外して make/target.mk に config.guess で解決させる。
+            # 引き継ぐと <target>/Makefile が見つからず release が失敗する
+            env -u TARGET make -C erts/emulator TYPE=frmptr TESTROOT="${RELEASE_DIR}" release
         fi
         cd "${RELEASE_DIR}"
         ./Install -sasl "${PWD}"
