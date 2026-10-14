@@ -352,7 +352,7 @@ jobs:
           printf '29.1.1\tv5.11.0\tx86_64-unknown-linux-gnu\totp-x86_64-unknown-linux-gnu-debug.tar.gz\tccc\tshiguredo/otp@abc\totp-x86_64-unknown-linux-gnu.iplt\tbbb\ttrue\n' >> "${manifest}"
 
           resolve() {
-            env -u GITHUB_ACTIONS -u GITHUB_OUTPUT -u GITHUB_PATH \
+            env -u GITHUB_ACTIONS -u GITHUB_OUTPUT -u GITHUB_PATH -u RUNNER_TOOL_CACHE \
               HOME="${work_dir}/home" \
               SETUP_ERLANG_MANIFEST="${manifest}" \
               INPUT_OTP_VERSION=29.1.1 \
@@ -374,7 +374,7 @@ jobs:
           [[ "$(printf '%s\n' "${debug_output}" | sed -n 's/^plt_path=//p')" == "${work_dir}/home/.local/share/setup-erlang/29.1.1-aws-lc-v5.11.0-debug/plt/rebar3_29.1.1_iplt" ]]
 
           if INPUT_DEBUG=true \
-            env -u GITHUB_ACTIONS -u GITHUB_OUTPUT -u GITHUB_PATH \
+            env -u GITHUB_ACTIONS -u GITHUB_OUTPUT -u GITHUB_PATH -u RUNNER_TOOL_CACHE \
               HOME="${work_dir}/home" \
               SETUP_ERLANG_MANIFEST="${manifest}" \
               INPUT_OTP_VERSION=29.1.1 \
