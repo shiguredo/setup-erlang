@@ -94,9 +94,9 @@ Environment:
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/shiguredo/setup-erlang/main/scripts/install.sh | bash
-  curl -fsSL .../install.sh | bash -s -- 29.1.1
+  curl -fsSL .../install.sh | bash -s -- 29.1.2
   curl -fsSL .../install.sh | bash -s -- list
-  install.sh use 29.1.1 v5.11.0
+  install.sh use 29.1.2 v5.11.0
 USAGE
 }
 
@@ -438,7 +438,7 @@ resolve_versions() {
     local requested_otp="${INPUT_OTP_VERSION:-}"
     if [[ -z "${requested_otp}" || "${requested_otp}" == "latest" ]]; then
         [[ "${ACTION_MODE}" == "false" ]] ||
-            die 'otp-version is required in GitHub Actions and must be an exact version (example: 29.1.1)'
+            die 'otp-version is required in GitHub Actions and must be an exact version (example: 29.1.2)'
         requested_otp="latest"
     fi
 
