@@ -268,13 +268,17 @@ jobs:
             echo "release ${release_tag} does not exist" >&2
             exit 1
           fi
+          notes="Prebuilt Erlang/OTP ${OTP_VERSION} with AWS-LC ${AWS_LC_VERSION}."
+          if [[ "${DEBUG}" == "true" ]]; then
+            notes="${notes} Includes the debug build."
+          fi
           if [[ "${release_exists}" == "true" ]]; then
             gh release upload "${release_tag}" "${files[@]}" "${upload_dir}/SHA256SUMS" --clobber
-          else
-            notes="Prebuilt Erlang/OTP ${OTP_VERSION} with AWS-LC ${AWS_LC_VERSION}."
+            # デバッグ版を後から追加したときもノートに反映する
             if [[ "${DEBUG}" == "true" ]]; then
-              notes="${notes} Includes the debug build."
+              gh release edit "${release_tag}" --notes "${notes}"
             fi
+          else
             gh release create "${release_tag}" "${files[@]}" "${upload_dir}/SHA256SUMS" \
               --title "Erlang/OTP ${OTP_VERSION} with AWS-LC ${AWS_LC_VERSION}" \
               --notes "${notes}"
