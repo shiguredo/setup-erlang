@@ -249,30 +249,31 @@ jobs:
           fi
           # update-manifest は今回のバリアントの行だけを読む。
           # GitHub Release の SHA256SUMS は既存のもう一方のバリアントを残す
+          # gh の file#name はアセット名ではなく表示ラベルになるため、
+          # 一時ファイルではなく実ファイル名 SHA256SUMS を使ってアップロードする
           sha256sum "${files[@]}" > SHA256SUMS
-          upload_sums="$(mktemp)"
-          cp SHA256SUMS "${upload_sums}"
           release_exists=false
           if gh release view "${release_tag}" >/dev/null 2>&1; then
             release_exists=true
             previous="$(mktemp -d)"
             if gh release download "${release_tag}" --pattern SHA256SUMS --dir "${previous}"; then
               awk 'NR == FNR { replaced[$2] = 1; next } !($2 in replaced)' \
-                SHA256SUMS "${previous}/SHA256SUMS" > "${upload_sums}.kept"
-              cat "${upload_sums}.kept" SHA256SUMS > "${upload_sums}"
+                SHA256SUMS "${previous}/SHA256SUMS" > "${previous}/SHA256SUMS.kept"
+              cat "${previous}/SHA256SUMS.kept" SHA256SUMS > "${previous}/SHA256SUMS.merged"
+              mv "${previous}/SHA256SUMS.merged" SHA256SUMS
             fi
           elif [[ "${PLT_ONLY}" == "true" ]]; then
             echo "release ${release_tag} does not exist" >&2
             exit 1
           fi
           if [[ "${release_exists}" == "true" ]]; then
-            gh release upload "${release_tag}" "${files[@]}" "${upload_sums}#SHA256SUMS" --clobber
+            gh release upload "${release_tag}" "${files[@]}" SHA256SUMS --clobber
           else
             notes="Prebuilt Erlang/OTP ${OTP_VERSION} with AWS-LC ${AWS_LC_VERSION}."
             if [[ "${DEBUG}" == "true" ]]; then
               notes="${notes} Includes the debug build."
             fi
-            gh release create "${release_tag}" "${files[@]}" "${upload_sums}#SHA256SUMS" \
+            gh release create "${release_tag}" "${files[@]}" SHA256SUMS \
               --title "Erlang/OTP ${OTP_VERSION} with AWS-LC ${AWS_LC_VERSION}" \
               --notes "${notes}"
           fi
