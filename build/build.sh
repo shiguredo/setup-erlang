@@ -23,7 +23,7 @@
 set -euo pipefail
 
 : "${OTP_VERSION:?OTP_VERSION is required (example: 29.1.2)}"
-: "${AWS_LC_VERSION:?AWS_LC_VERSION is required (example: v5.11.0)}"
+: "${AWS_LC_VERSION:?AWS_LC_VERSION is required (example: v5.12.0)}"
 : "${TARGET:?TARGET is required (example: x86_64-unknown-linux-gnu)}"
 
 # true のときデバッグ版を作る。それ以外は正式版
